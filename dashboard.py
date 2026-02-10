@@ -1,82 +1,120 @@
 import streamlit as st
 import pandas as pd
-import glob
-import json
 import os
-from datetime import datetime
+import json
+import glob
+from datetime import datetime, timedelta
+from streamlit_autorefresh import st_autorefresh
 
+# --- Page Configuration ---
 st.set_page_config(
     page_title="Orderbook Health Monitor",
     page_icon="📊",
     layout="wide"
 )
 
-st.title("📊 Orderbook Health Monitor")
-st.markdown("*Real-time market liquidity and spread tracking*")
+# Auto-refresh every 60 seconds
+st_autorefresh(interval=60 * 1000, key="data_refresh")
 
-# --- Data Loading Functions ---
+st.title("📊 Orderbook Health Monitor")
+st.markdown("*Automated hourly monitoring via GitHub Actions*")
+
+# --- Helper Functions ---
+
 def load_latest_data():
+    """Load current status from latest.csv and consecutive strikes from JSON."""
     if not os.path.exists('data/latest.csv'):
-        return None, None
+        return None
     
     df = pd.read_csv('data/latest.csv')
     df['timestamp'] = pd.to_datetime(df['timestamp'])
-    
-    # Try to load consecutive strikes from state file
-    strikes = {}
-    if os.path.exists('data/health_state.json'):
-        with open('data/health_state.json', 'r') as f:
-            state = json.load(f)
-            strikes = {k: v['consecutive'] for k, v in state.items()}
-    
-    df['strikes'] = df['symbol'].map(strikes).fillna(0).astype(int)
-    return df, strikes
+    return df
 
-# --- Layout ---
-latest_df, strikes_map = load_latest_data()
+def load_24h_history():
+    """Load today and yesterday's CSV files to construct a 24h window."""
+    today = datetime.now()
+    yesterday = today - timedelta(days=1)
+    
+    files_to_load = [
+        os.path.join('data', f"{yesterday.strftime('%Y_%m_%d')}.csv"),
+        os.path.join('data', f"{today.strftime('%Y_%m_%d')}.csv")
+    ]
+    
+    dataframes = []
+    for f in files_to_load:
+        if os.path.exists(f):
+            try:
+                dataframes.append(pd.read_csv(f))
+            except Exception:
+                pass
+            
+    if not dataframes:
+        return pd.DataFrame()
+    
+    combined = pd.concat(dataframes).drop_duplicates()
+    combined['timestamp'] = pd.to_datetime(combined['timestamp'])
+    
+    # Filter for the last 24 hours only
+    cutoff = datetime.now() - timedelta(hours=24)
+    return combined[combined['timestamp'] >= cutoff]
+
+# --- Main Dashboard Logic ---
+
+latest_df = load_latest_data()
 
 if latest_df is None:
-    st.warning("⚠️ No data available yet. Waiting for GitHub Actions to run...")
+    st.warning("⚠️ **No data available yet.** The scraper hasn't run yet or the data folder is empty.")
+    st.info("Check your GitHub Actions tab to manually trigger a run.")
     st.stop()
 
-# --- Top Metrics ---
+# --- Top Metrics Row ---
 last_update = latest_df['timestamp'].max()
 time_diff = datetime.now() - last_update
 minutes_ago = int(time_diff.total_seconds() / 60)
 
 m1, m2, m3, m4 = st.columns(4)
-m1.metric("Last Update", last_update.strftime('%H:%M:%S'))
-m2.metric("Healthy Markets", (latest_df['status'] == 'Healthy').sum())
-m3.metric("Warnings", (latest_df['status'] == 'Warning').sum(), delta_color="inverse")
-m4.metric("Monitor Status", "Live" if minutes_ago < 90 else "Stale", delta=f"{minutes_ago}m ago")
+
+with m1:
+    st.metric("Last Update", last_update.strftime('%H:%M:%S'))
+
+with m2:
+    healthy_count = (latest_df['status'] == 'Healthy').sum()
+    st.metric("Healthy Markets", healthy_count)
+
+with m3:
+    warning_count = (latest_df['status'] == 'Warning').sum()
+    st.metric("Warning Markets", warning_count, 
+              delta=None if warning_count == 0 else f"{warning_count} issues",
+              delta_color="inverse")
+
+with m4:
+    status_label = "Live" if minutes_ago < 90 else "Stale"
+    st.metric("Monitor Status", status_label, delta=f"{minutes_ago}m ago")
 
 st.markdown("---")
 
-# --- Main Status Table ---
+# --- Current Status Table ---
 st.subheader("🎯 Current Market Status")
 
-# We only select columns that actually exist in the NEW scraper
-display_cols = ['symbol', 'status', 'strikes', 'current_spread', 'target_spread', 'percent_diff', 'dws', 'depth_1pct_display']
-available_cols = [c for c in display_cols if c in latest_df.columns]
+# Select and rename columns for display
+# Based on your scraper output: timestamp, symbol, status, strikes, current_spread, target_spread, percent_diff, dws, depth_1pct_display
+display_df = latest_df[[
+    'symbol', 'status', 'strikes', 'current_spread', 
+    'target_spread', 'percent_diff', 'dws', 'depth_1pct_display'
+]].copy()
 
-display_df = latest_df[available_cols].copy()
-
-# Rename for UI
-display_df.columns = [c.replace('_', ' ').title() for c in display_df.columns]
+display_df.columns = [
+    'Market', 'Status', 'Strikes', 'Spread %', 
+    'Target %', 'Diff %', 'DWS %', 'Depth'
+]
 
 def style_status(row):
-    # Note: Scraper uses 'Warning' and 'Healthy'
+    """Apply RGBA colors for transparency (Theme-Aware)"""
     if row['Status'] == 'Warning':
-        # Use the RGBA logic that worked in your snippet
-        return ['background-color: rgba(255, 50, 50, 0.3)'] * len(row)
-    
+        return ['background-color: rgba(255, 50, 50, 0.25)'] * len(row)
     elif row['Status'] == 'Healthy':
-        # Use the semi-transparent green
-        return ['background-color: rgba(50, 255, 50, 0.3)'] * len(row)
-    
-    else:
-        # Default/Pending status
-        return ['background-color: rgba(255, 255, 0, 0.1)'] * len(row)
+        return ['background-color: rgba(50, 255, 50, 0.20)'] * len(row)
+    return [''] * len(row)
 
 st.dataframe(
     display_df.style.apply(style_status, axis=1),
@@ -84,41 +122,52 @@ st.dataframe(
     hide_index=True
 )
 
-# --- Historical Charts ---
+# --- Historical Trends Section ---
 st.markdown("---")
 st.subheader("📈 24h Spread Trends")
 
-try:
-    all_files = sorted(glob.glob('data/orderbook_*.csv'))
-    if len(all_files) > 1:
-        # Load last 24 runs
-        recent_files = all_files[-24:]
-        hist_df = pd.concat([pd.read_csv(f) for f in recent_files])
-        hist_df['timestamp'] = pd.to_datetime(hist_df['timestamp'])
+hist_df = load_24h_history()
 
-        selected_market = st.selectbox("Select Market to Analyze", options=sorted(hist_df['symbol'].unique()))
-        
-        market_data = hist_df[hist_df['symbol'] == selected_market].sort_values('timestamp')
-        
-        # # Plotting
-        # chart_data = market_data.set_index('timestamp')[['current_spread', 'target_spread']]
-        # st.line_chart(chart_data)
-        
-        # Detail metrics
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Avg Spread", f"{market_data['current_spread'].mean():.4f}%")
-        c2.metric("Max Spread", f"{market_data['current_spread'].max():.4f}%")
-        c3.metric("Avg DWS", f"{market_data['dws'].mean():.4f}%")
-        c4.metric("Uptime", f"{(market_data['status'] == 'Healthy').mean()*100:.1f}%")
-    else:
-        st.info("Collecting historical data... check back in a few hours.")
-except Exception as e:
-    st.error(f"Error loading history: {e}")
+if not hist_df.empty:
+    markets = sorted(hist_df['symbol'].unique())
+    selected_market = st.selectbox("Select Market to Analyze", options=markets)
+    
+    market_data = hist_df[hist_df['symbol'] == selected_market].sort_values('timestamp')
+    
+    # Spread Line Chart
+    chart_data = market_data.set_index('timestamp')[['current_spread', 'target_spread']]
+    st.line_chart(chart_data)
+    
+    # Statistical Summary for Market
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Avg Spread", f"{market_data['current_spread'].mean():.4f}%")
+    c2.metric("Max Spread", f"{market_data['current_spread'].max():.4f}%")
+    c3.metric("Avg DWS", f"{market_data['dws'].mean():.4f}%")
+    
+    uptime = (market_data['status'] == 'Healthy').mean() * 100
+    c4.metric("Uptime %", f"{uptime:.1f}%")
 
-# --- Footer Auto-Refresh ---
+else:
+    st.info("Collecting historical logs... History will populate as daily CSV files are created.")
+
+# --- System Information ---
 st.markdown("---")
-st.caption(f"Last UI Refresh: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+with st.expander("ℹ️ System Information"):
+    col_a, col_b = st.columns(2)
+    with col_a:
+        st.markdown("""
+        **Data Storage:**
+        - `latest.csv`: Real-time state.
+        - `YYYY_MM_DD.csv`: Rolling daily logs.
+        - `health_state.json`: Strike tracking.
+        """)
+    with col_b:
+        st.markdown("""
+        **Metrics Info:**
+        - **DWS:** Dollar-Weighted Spread.
+        - **Strikes:** Consecutive hours of Warning status.
+        - **Uptime:** % of checks where status was 'Healthy'.
+        """)
 
-# Auto-refresh logic
-from streamlit_autorefresh import st_autorefresh
-st_autorefresh(interval=60 * 1000, key="data_refresh")
+# Footer
+st.caption(f"Last UI Refresh: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} • Auto-refresh active")
