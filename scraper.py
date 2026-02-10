@@ -253,7 +253,26 @@ def main():
             print(f"✅ Data saved to latest.csv and daily log: {today_str}.csv")
         
         save_state(state)
-        send_telegram(f"✅ <b>Check Complete</b>\nWarnings: {len([r for r in final_results if r['status'] == 'Warning'])}")
+        
+        # Build detailed completion message
+        warnings = [r for r in final_results if r['status'] == 'Warning']
+        total_pairs = len(final_results)
+        
+        completion_msg = f"✅ <b>Check Complete</b>\n"
+        completion_msg += f"Total Pairs: {total_pairs}\n"
+        completion_msg += f"Warnings: {len(warnings)}\n"
+        
+        if warnings:
+            completion_msg += f"\n<b>⚠️ Markets with Warnings:</b>\n"
+            for w in warnings:
+                completion_msg += f"\n<b>{w['symbol']}</b>\n"
+                completion_msg += f"  Spread: {w['current_spread']}% (Target: {w['target_spread']}%)\n"
+                completion_msg += f"  Diff: {w['percent_diff']:+.2f}%\n"
+                completion_msg += f"  Strikes: {w['strikes']}\n"
+                completion_msg += f"  DWS: {w['dws']}\n"
+                completion_msg += f"  Depth: {w['depth_1pct_display']}\n"
+        
+        send_telegram(completion_msg)
 
     finally:
         driver.quit()
