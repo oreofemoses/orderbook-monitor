@@ -8,17 +8,25 @@ from selenium.webdriver.chrome.service import Service
 import time
 import os
 import re
+import csv
 import json
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # --- Configuration ---
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 
+# Files & Folders
 DATA_DIR = "data"
 STATE_FILE = os.path.join(DATA_DIR, "health_state.json")
+LOG_DIR = os.path.join(DATA_DIR, "logs")
 BASE_URL = "https://pro.quidax.io/en_US/trade/"
+
+# Thresholds (Matching your dashboard logic)
+ALERT_THRESHOLD_CYCLES = 3
+ALERT_COOLDOWN_MINUTES = 30
+MAX_ATTEMPTS_PER_PAIR = 3
 
 PAIRS = [
     ['AAVE_USDT', 0.30], ['ADA_USDT', 0.26], ['ALGO_USDT', 2.00],
@@ -39,15 +47,7 @@ PAIRS = [
     ['USDC_NGN', 0.50]
 ]
 
-# --- Utilities ---
-
-def send_telegram(msg):
-    if not TELEGRAM_BOT_TOKEN: return
-    try:
-        requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", 
-                     json={'chat_id': TELEGRAM_CHAT_ID, 'text': msg, 'parse_mode': 'HTML'}, timeout=10)
-    except Exception as e:
-        print(f"Telegram failed: {e}")
+# --- Core Computation Functions ---
 
 def parse_number(value):
     if not value or "--" in str(value): return None
@@ -81,21 +81,62 @@ def parse_orderbook(text: str):
                 else: bids.append(row)
     return pd.DataFrame(asks), pd.DataFrame(bids), spread_pct
 
-def calculate_liquidity_depth(asks_df, bids_df, range_multiplier):
+def calculate_liquidity_depth(asks_df, bids_df, spread_pct_range):
     if asks_df.empty or bids_df.empty: return 0
     mid = (asks_df['price'].min() + bids_df['price'].max()) / 2
-    upper, lower = mid * (1 + range_multiplier/100), mid * (1 - range_multiplier/100)
-    return bids_df[bids_df['price'] >= lower]['total'].sum() + asks_df[asks_df['price'] <= upper]['total'].sum()
+    upper, lower = mid * (1 + spread_pct_range / 100), mid * (1 - spread_pct_range / 100)
+    bid_depth = (bids_df[bids_df['price'] >= lower]['price'] * bids_df[bids_df['price'] >= lower]['amount']).sum()
+    ask_depth = (asks_df[asks_df['price'] <= upper]['price'] * asks_df[asks_df['price'] <= upper]['amount']).sum()
+    return bid_depth + ask_depth
 
-def calculate_dws(asks_df, bids_df, levels=10):
+def calculate_dws(asks_df, bids_df, num_levels=10):
     if asks_df.empty or bids_df.empty: return 0
     mid = (asks_df['price'].min() + bids_df['price'].max()) / 2
-    a_sub, b_sub = asks_df.nsmallest(levels, 'price'), bids_df.nlargest(levels, 'price')
+    a_sub, b_sub = asks_df.nsmallest(num_levels, 'price'), bids_df.nlargest(num_levels, 'price')
     num = (a_sub['amount'] * (a_sub['price'] - mid)).abs().sum() + (b_sub['amount'] * (mid - b_sub['price'])).abs().sum()
     den = a_sub['amount'].sum() + b_sub['amount'].sum()
     return (num / den) / mid * 100 if den > 0 else 0
 
-def init_chrome_driver():
+def format_depth(val):
+    if not val: return "$0"
+    if val >= 1_000_000: return f"${val/1_000_000:.2f}M"
+    if val >= 1_000: return f"${val/1_000:.1f}K"
+    return f"${val:.0f}"
+
+# --- Persistence & Helpers ---
+
+def load_state():
+    if os.path.exists(STATE_FILE):
+        with open(STATE_FILE, 'r') as f: return json.load(f)
+    return {}
+
+def save_state(state):
+    with open(STATE_FILE, 'w') as f: json.dump(state, f)
+
+def log_event(symbol, event_type, row_data):
+    os.makedirs(LOG_DIR, exist_ok=True)
+    today = datetime.now().strftime("%Y-%m-%d")
+    path = os.path.join(LOG_DIR, f"health_log_{today}.csv")
+    exists = os.path.exists(path)
+    with open(path, 'a', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=['timestamp', 'symbol', 'event_type', 'spread', 'diff', 'status', 'notes'])
+        if not exists: writer.writeheader()
+        writer.writerow({
+            'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            'symbol': symbol,
+            'event_type': event_type,
+            'spread': row_data.get('current_spread'),
+            'diff': row_data.get('percent_diff'),
+            'status': row_data.get('status'),
+            'notes': row_data.get('notes', '')
+        })
+
+def send_telegram(msg):
+    if not TELEGRAM_BOT_TOKEN: return
+    requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", 
+                 json={'chat_id': TELEGRAM_CHAT_ID, 'text': msg, 'parse_mode': 'HTML'})
+
+def init_driver():
     chrome_options = Options()
     chrome_options.add_argument("--headless=new")
     chrome_options.add_argument("--no-sandbox")
@@ -110,90 +151,95 @@ def init_chrome_driver():
     try: return webdriver.Chrome(service=service, options=chrome_options)
     except: return webdriver.Chrome(options=chrome_options)
 
-# --- Main Logic ---
+# --- Main Execution ---
 
 def main():
     os.makedirs(DATA_DIR, exist_ok=True)
+    state = load_state()
+    driver = init_driver()
+    final_results = []
     
-    # 1. PING AT START
-    start_time = datetime.now()
-    send_telegram(f"🔄 <b>Starting Hourly Orderbook Check</b>\nPairs to scan: {len(PAIRS)}\nTime: {start_time.strftime('%H:%M:%S')}")
+    send_telegram(f"🔄 <b>Starting Hourly Check</b>\nPairs: {len(PAIRS)}")
 
-    state = {}
-    if os.path.exists(STATE_FILE):
-        with open(STATE_FILE, 'r') as f: state = json.load(f)
-    
-    driver = init_chrome_driver()
-    results = []
-    
     try:
         for symbol, target in PAIRS:
-            print(f"🔍 Scrapping {symbol}...")
-            try:
-                driver.get(f"{BASE_URL}{symbol}")
-                wait = WebDriverWait(driver, 12)
-                selector = ".newTrade-depth-block.depath-index-container"
-                element = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, selector)))
-                wait.until(lambda d: "Spread" in element.text and any(c.isdigit() for c in element.text))
-                
-                asks_df, bids_df, curr_spread = parse_orderbook(element.text)
-                
-                if curr_spread is not None:
-                    diff_pct = ((curr_spread - target) / target) * 100
-                    is_poor = (diff_pct > 50 or diff_pct < -40) # 50% threshold
+            attempt = 0
+            success = False
+            
+            while attempt < MAX_ATTEMPTS_PER_PAIR and not success:
+                attempt += 1
+                try:
+                    driver.get(f"{BASE_URL}{symbol}")
+                    wait = WebDriverWait(driver, 15)
+                    selector = ".newTrade-depth-block.depath-index-container"
+                    element = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, selector)))
+                    wait.until(lambda d: "Spread" in element.text and any(c.isdigit() for c in element.text))
                     
-                    # Update State
-                    p_state = state.get(symbol, {"consecutive": 0})
-                    if is_poor: p_state["consecutive"] += 1
-                    else: p_state["consecutive"] = 0
+                    asks_df, bids_df, curr_spread = parse_orderbook(element.text)
+                    if curr_spread is None: raise ValueError("No spread data")
+
+                    # Calculations
+                    diff = ((curr_spread - target) / target) * 100
+                    is_poor = (diff > 100 or diff < -40)
+                    dws = calculate_dws(asks_df, bids_df)
+                    depth_25 = calculate_liquidity_depth(asks_df, bids_df, curr_spread * 1.25)
+                    depth_50 = calculate_liquidity_depth(asks_df, bids_df, curr_spread * 1.5)
+
+                    # State Logic
+                    p_state = state.get(symbol, {"consecutive": 0, "last_alert": None, "start_time": None})
+                    prev_status = "Warning" if p_state["consecutive"] > 0 else "Healthy"
+                    
+                    if is_poor:
+                        p_state["consecutive"] += 1
+                        if not p_state["start_time"]: p_state["start_time"] = datetime.now().isoformat()
+                    else:
+                        if prev_status == "Warning":
+                            log_event(symbol, "WARNING_CLEARED", {'current_spread': curr_spread, 'percent_diff': diff, 'status': 'Healthy'})
+                        p_state["consecutive"] = 0
+                        p_state["start_time"] = None
+                        p_state["last_alert"] = None
+
                     state[symbol] = p_state
                     
-                    # Store Metrics
-                    results.append({
+                    # Log New Warnings
+                    if is_poor and prev_status == "Healthy":
+                        log_event(symbol, "WARNING_ENTERED", {'current_spread': curr_spread, 'percent_diff': diff, 'status': 'Warning'})
+
+                    # Alert Logic
+                    if p_state["consecutive"] >= ALERT_THRESHOLD_CYCLES:
+                        last_alert = p_state.get("last_alert")
+                        cooldown_ok = True
+                        if last_alert:
+                            if datetime.now() - datetime.fromisoformat(last_alert) < timedelta(minutes=ALERT_COOLDOWN_MINUTES):
+                                cooldown_ok = False
+                        
+                        if cooldown_ok:
+                            alert_msg = f"⚠️ <b>ALERT: {symbol}</b>\nSpread: {curr_spread}%\nDiff: {diff:+.2f}%\nStrikes: {p_state['consecutive']}\nDepth 25%: {format_depth(depth_25)}"
+                            send_telegram(alert_msg)
+                            p_state["last_alert"] = datetime.now().isoformat()
+
+                    final_results.append({
                         'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                        'symbol': symbol,
-                        'current_spread': curr_spread,
-                        'target_spread': target,
-                        'percent_diff': round(diff_pct, 2),
-                        'status': 'Warning' if is_poor else 'Healthy',
-                        'dws': round(calculate_dws(asks_df, bids_df), 4),
-                        'depth_1pct_display': f"${calculate_liquidity_depth(asks_df, bids_df, curr_spread*1.25)/1000:.1f}K",
-                        'strikes': p_state["consecutive"]
+                        'symbol': symbol, 'status': 'Warning' if is_poor else 'Healthy',
+                        'strikes': p_state["consecutive"], 'current_spread': curr_spread,
+                        'target_spread': target, 'percent_diff': round(diff, 2),
+                        'dws': round(dws, 4), 'depth_1pct_display': format_depth(depth_25)
                     })
-            except Exception:
-                print(f"❌ Skipped {symbol}")
+                    success = True
+                except Exception as e:
+                    if attempt == MAX_ATTEMPTS_PER_PAIR:
+                        log_event(symbol, "SCRAPE_FAILED", {'notes': str(e)})
+                    time.sleep(2)
 
-        # 2. PING AT END (Summary Report)
-        warnings = [r for r in results if r['status'] == 'Warning']
-        end_time = datetime.now()
+        # Save Output
+        if final_results:
+            pd.DataFrame(final_results).to_csv(os.path.join(DATA_DIR, "latest.csv"), index=False)
+            hist_ts = datetime.now().strftime("%Y%m%d_%H%M")
+            pd.DataFrame(final_results).to_csv(os.path.join(DATA_DIR, f"orderbook_{hist_ts}.csv"), index=False)
         
-        report = f"✅ <b>Check Complete</b> ({end_time.strftime('%H:%M:%S')})\n"
-        report += f"Total: {len(results)} | Healthy: {len(results)-len(warnings)} | ⚠️ Warning: {len(warnings)}\n"
-        
-        if warnings:
-            report += "\n📊 <b>WARNING DETAILS:</b>\n"
-            # Sort warnings by worst deviation
-            warnings = sorted(warnings, key=lambda x: x['percent_diff'], reverse=True)
-            
-            for w in warnings:
-                report += (
-                    f"----------------------------\n"
-                    f"<b>{w['symbol']}</b> (Strike: {w['strikes']})\n"
-                    f"• Spread: <code>{w['current_spread']}%</code> (Target: {w['target_spread']}%)\n"
-                    f"• Diff: <code>{w['percent_diff']:+.1f}%</code>\n"
-                    f"• DWS: <code>{w['dws']:.4f}%</code>\n"
-                    f"• Depth: <code>{w['depth_1pct_display']}</code>\n"
-                )
-        
-        # If the report is too long for one Telegram message (max 4096 chars), 
-        # it might need splitting, but with 50 pairs and only warnings, this format should fit.
-        send_telegram(report)
+        save_state(state)
+        send_telegram(f"✅ <b>Check Complete</b>\nWarnings: {len([r for r in final_results if r['status'] == 'Warning'])}")
 
-        # Save Files
-        df = pd.DataFrame(results)
-        df.to_csv(f"{DATA_DIR}/latest.csv", index=False)
-        with open(STATE_FILE, 'w') as f: json.dump(state, f)
-        
     finally:
         driver.quit()
 
