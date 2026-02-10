@@ -91,9 +91,9 @@ try:
         
         market_data = hist_df[hist_df['symbol'] == selected_market].sort_values('timestamp')
         
-        # Plotting
-        chart_data = market_data.set_index('timestamp')[['current_spread', 'target_spread']]
-        st.line_chart(chart_data)
+        # # Plotting
+        # chart_data = market_data.set_index('timestamp')[['current_spread', 'target_spread']]
+        # st.line_chart(chart_data)
         
         # Detail metrics
         c1, c2, c3, c4 = st.columns(4)
