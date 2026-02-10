@@ -49,6 +49,8 @@ jobs:
         
         # Add files in data folder
         git add data/
+
+        git pull origin main --rebase --autostash
         
         # Check if there are changes before committing to avoid errors
         if git diff --staged --quiet; then
