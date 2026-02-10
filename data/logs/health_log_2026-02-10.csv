@@ -5,3 +5,26 @@ timestamp,symbol,event_type,spread,diff,status,notes
 2026-02-10 20:53:13,QDX_NGN,WARNING_CLEARED,7.0832,-29.168000000000006,Healthy,
 2026-02-10 20:53:31,SOL_NGN,WARNING_ENTERED,0.111,-77.8,Warning,
 2026-02-10 20:53:34,USDC_NGN,WARNING_ENTERED,0.277,-44.599999999999994,Warning,
+2026-02-10 21:20:33,AAVE_USDT,SCRAPE_FAILED,,,,"Message: 
+Stacktrace:
+#0 0x562c6975870a <unknown>
+#1 0x562c691e0f92 <unknown>
+#2 0x562c692356ce <unknown>
+#3 0x562c692359f1 <unknown>
+#4 0x562c69281064 <unknown>
+#5 0x562c6927e28e <unknown>
+#6 0x562c692276d7 <unknown>
+#7 0x562c692284c1 <unknown>
+#8 0x562c6971dcaf <unknown>
+#9 0x562c69720c9e <unknown>
+#10 0x562c6970bb6e <unknown>
+#11 0x562c69721439 <unknown>
+#12 0x562c696f4127 <unknown>
+#13 0x562c69746568 <unknown>
+#14 0x562c69746793 <unknown>
+#15 0x562c697579e1 <unknown>
+#16 0x7f4b86e95aa4 <unknown>
+#17 0x7f4b86f22c6c <unknown>
+"
+2026-02-10 21:22:21,SOL_USDT,WARNING_ENTERED,0.522,108.80000000000001,Warning,
+2026-02-10 21:23:23,SOL_NGN,WARNING_CLEARED,0.5,0.0,Healthy,
