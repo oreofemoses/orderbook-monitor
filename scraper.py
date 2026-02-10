@@ -20,7 +20,6 @@ TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 # Files & Folders
 DATA_DIR = "data"
 STATE_FILE = os.path.join(DATA_DIR, "health_state.json")
-LOG_DIR = os.path.join(DATA_DIR, "logs")
 BASE_URL = "https://pro.quidax.io/en_US/trade/"
 
 # Thresholds (Matching your dashboard logic)
@@ -114,9 +113,8 @@ def save_state(state):
     with open(STATE_FILE, 'w') as f: json.dump(state, f)
 
 def log_event(symbol, event_type, row_data):
-    os.makedirs(LOG_DIR, exist_ok=True)
     today = datetime.now().strftime("%Y-%m-%d")
-    path = os.path.join(LOG_DIR, f"health_log_{today}.csv")
+    path = os.path.join(DATA_DIR, f"daily_log_{today}.csv")
     exists = os.path.exists(path)
     with open(path, 'a', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=['timestamp', 'symbol', 'event_type', 'spread', 'diff', 'status', 'notes'])
@@ -235,22 +233,10 @@ def main():
         if final_results:
             new_df = pd.DataFrame(final_results)
             
-            # 1. Overwrite latest.csv for the main dashboard table
+            # Overwrite latest.csv for the main dashboard table
             new_df.to_csv(os.path.join(DATA_DIR, "latest.csv"), index=False)
             
-            # 2. Daily File (e.g., data/2026_02_10.csv)
-            today_str = datetime.now().strftime("%Y_%m_%d")
-            daily_path = os.path.join(DATA_DIR, f"{today_str}.csv")
-            
-            # Append to today's file. If it doesn't exist, it creates it with headers.
-            new_df.to_csv(
-                daily_path, 
-                mode='a', 
-                header=not os.path.exists(daily_path), 
-                index=False
-            )
-            
-            print(f"✅ Data saved to latest.csv and daily log: {today_str}.csv")
+            print(f"✅ Data saved to latest.csv")
         
         save_state(state)
         
