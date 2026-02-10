@@ -65,9 +65,18 @@ display_df = latest_df[available_cols].copy()
 display_df.columns = [c.replace('_', ' ').title() for c in display_df.columns]
 
 def style_status(row):
+    # Note: Scraper uses 'Warning' and 'Healthy'
     if row['Status'] == 'Warning':
-        return ['background-color: #ffebee'] * len(row)
-    return ['background-color: #e8f5e9'] * len(row)
+        # Use the RGBA logic that worked in your snippet
+        return ['background-color: rgba(255, 50, 50, 0.3)'] * len(row)
+    
+    elif row['Status'] == 'Healthy':
+        # Use the semi-transparent green
+        return ['background-color: rgba(50, 255, 50, 0.3)'] * len(row)
+    
+    else:
+        # Default/Pending status
+        return ['background-color: rgba(255, 255, 0, 0.1)'] * len(row)
 
 st.dataframe(
     display_df.style.apply(style_status, axis=1),
