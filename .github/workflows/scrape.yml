@@ -12,16 +12,19 @@ jobs:
   scrape:
     runs-on: ubuntu-latest
     
+    # REQUIRED: Grant permission to push data back to the repository
+    permissions:
+      contents: write
+    
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v3
-      with:
-        token: ${{ secrets.GITHUB_TOKEN }}
+      uses: actions/checkout@v4
     
     - name: Set up Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5
       with:
         python-version: '3.10'
+        cache: 'pip' # speeds up subsequent runs
     
     - name: Install system dependencies
       run: |
@@ -31,7 +34,7 @@ jobs:
     - name: Install Python dependencies
       run: |
         pip install --upgrade pip
-        pip install selenium pandas requests python-dotenv
+        pip install -r requirements.txt
     
     - name: Run scraper
       env:
@@ -43,5 +46,14 @@ jobs:
       run: |
         git config --local user.email "github-actions[bot]@users.noreply.github.com"
         git config --local user.name "github-actions[bot]"
+        
+        # Add files in data folder
         git add data/
-        git diff --quiet && git diff --staged --quiet || (git commit -m "📊 Update orderbook data - $(date -u +'%Y-%m-%d %H:%M UTC')" && git push)
+        
+        # Check if there are changes before committing to avoid errors
+        if git diff --staged --quiet; then
+          echo "No changes to commit"
+        else
+          git commit -m "📊 Update orderbook data - $(date -u +'%Y-%m-%d %H:%M UTC')"
+          git push
+        fi
