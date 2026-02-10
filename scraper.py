@@ -233,9 +233,24 @@ def main():
 
         # Save Output
         if final_results:
-            pd.DataFrame(final_results).to_csv(os.path.join(DATA_DIR, "latest.csv"), index=False)
-            hist_ts = datetime.now().strftime("%Y%m%d_%H%M")
-            pd.DataFrame(final_results).to_csv(os.path.join(DATA_DIR, f"orderbook_{hist_ts}.csv"), index=False)
+            new_df = pd.DataFrame(final_results)
+            
+            # 1. Overwrite latest.csv for the main dashboard table
+            new_df.to_csv(os.path.join(DATA_DIR, "latest.csv"), index=False)
+            
+            # 2. Daily File (e.g., data/2026_02_10.csv)
+            today_str = datetime.now().strftime("%Y_%m_%d")
+            daily_path = os.path.join(DATA_DIR, f"{today_str}.csv")
+            
+            # Append to today's file. If it doesn't exist, it creates it with headers.
+            new_df.to_csv(
+                daily_path, 
+                mode='a', 
+                header=not os.path.exists(daily_path), 
+                index=False
+            )
+            
+            print(f"✅ Data saved to latest.csv and daily log: {today_str}.csv")
         
         save_state(state)
         send_telegram(f"✅ <b>Check Complete</b>\nWarnings: {len([r for r in final_results if r['status'] == 'Warning'])}")
