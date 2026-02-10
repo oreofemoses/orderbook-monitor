@@ -1,8 +1,9 @@
 import streamlit as st
 import pandas as pd
 import glob
-from datetime import datetime, timedelta
+import json
 import os
+from datetime import datetime
 
 st.set_page_config(
     page_title="Orderbook Health Monitor",
@@ -11,182 +12,104 @@ st.set_page_config(
 )
 
 st.title("📊 Orderbook Health Monitor")
-st.markdown("*Automated hourly monitoring via GitHub Actions*")
+st.markdown("*Real-time market liquidity and spread tracking*")
 
-# Check if data exists
-if not os.path.exists('data/latest.csv'):
-    st.warning("""
-    ⚠️ **No data available yet**
+# --- Data Loading Functions ---
+def load_latest_data():
+    if not os.path.exists('data/latest.csv'):
+        return None, None
     
-    The GitHub Actions scraper hasn't run yet, or the data folder is empty.
+    df = pd.read_csv('data/latest.csv')
+    df['timestamp'] = pd.to_datetime(df['timestamp'])
     
-    To trigger a manual run:
-    1. Go to your GitHub repository
-    2. Click "Actions" tab
-    3. Click "Hourly Orderbook Scraper"
-    4. Click "Run workflow"
+    # Try to load consecutive strikes from state file
+    strikes = {}
+    if os.path.exists('data/health_state.json'):
+        with open('data/health_state.json', 'r') as f:
+            state = json.load(f)
+            strikes = {k: v['consecutive'] for k, v in state.items()}
     
-    Data should appear here within 2-3 minutes.
-    """)
+    df['strikes'] = df['symbol'].map(strikes).fillna(0).astype(int)
+    return df, strikes
+
+# --- Layout ---
+latest_df, strikes_map = load_latest_data()
+
+if latest_df is None:
+    st.warning("⚠️ No data available yet. Waiting for GitHub Actions to run...")
     st.stop()
 
-# Load latest data
-try:
-    latest_df = pd.read_csv('data/latest.csv')
-    latest_df['timestamp'] = pd.to_datetime(latest_df['timestamp'])
-except Exception as e:
-    st.error(f"Error loading data: {e}")
-    st.stop()
-
-# Display last update time
+# --- Top Metrics ---
 last_update = latest_df['timestamp'].max()
-time_ago = datetime.now() - last_update
-minutes_ago = int(time_ago.total_seconds() / 60)
+time_diff = datetime.now() - last_update
+minutes_ago = int(time_diff.total_seconds() / 60)
 
-col1, col2, col3, col4 = st.columns(4)
-
-with col1:
-    st.metric("Last Update", last_update.strftime('%H:%M:%S'))
-
-with col2:
-    healthy_count = (latest_df['status'] == 'Healthy').sum()
-    st.metric("Healthy Markets", healthy_count, 
-             delta=None, 
-             delta_color="normal")
-
-with col3:
-    warning_count = (latest_df['status'] == 'Warning').sum()
-    st.metric("Warning Markets", warning_count,
-             delta=None if warning_count == 0 else f"{warning_count} issues",
-             delta_color="inverse")
-
-with col4:
-    st.metric("Minutes Since Update", minutes_ago)
+m1, m2, m3, m4 = st.columns(4)
+m1.metric("Last Update", last_update.strftime('%H:%M:%S'))
+m2.metric("Healthy Markets", (latest_df['status'] == 'Healthy').sum())
+m3.metric("Warnings", (latest_df['status'] == 'Warning').sum(), delta_color="inverse")
+m4.metric("Monitor Status", "Live" if minutes_ago < 90 else "Stale", delta=f"{minutes_ago}m ago")
 
 st.markdown("---")
 
-# Current Status Table
+# --- Main Status Table ---
 st.subheader("🎯 Current Market Status")
 
-# Prepare display dataframe
-display_df = latest_df[[
-    'symbol', 'status', 'current_spread', 'target_spread', 
-    'percent_diff', 'depth_1pct_display', 'depth_2pct_display', 'dws'
-]].copy()
+# We only select columns that actually exist in the NEW scraper
+display_cols = ['symbol', 'status', 'strikes', 'current_spread', 'target_spread', 'percent_diff', 'dws', 'depth_1pct_display']
+available_cols = [c for c in display_cols if c in latest_df.columns]
 
-display_df.columns = [
-    'Market', 'Status', 'Current Spread', 'Target', 
-    '% Diff', '1% Depth', '2% Depth', 'DWS'
-]
+display_df = latest_df[available_cols].copy()
 
-# Color-code status
-def highlight_status(row):
+# Rename for UI
+display_df.columns = [c.replace('_', ' ').title() for c in display_df.columns]
+
+def style_status(row):
     if row['Status'] == 'Warning':
         return ['background-color: #ffebee'] * len(row)
-    elif row['Status'] == 'Healthy':
-        return ['background-color: #e8f5e9'] * len(row)
-    else:
-        return ['background-color: #fff9c4'] * len(row)
+    return ['background-color: #e8f5e9'] * len(row)
 
 st.dataframe(
-    display_df.style.apply(highlight_status, axis=1),
+    display_df.style.apply(style_status, axis=1),
     use_container_width=True,
     hide_index=True
 )
 
-# Historical Data Section
+# --- Historical Charts ---
 st.markdown("---")
-st.subheader("📈 Historical Trends")
+st.subheader("📈 24h Spread Trends")
 
-# Load historical data
 try:
     all_files = sorted(glob.glob('data/orderbook_*.csv'))
-    
     if len(all_files) > 1:
-        # Load last 24 files (24 hours of data)
+        # Load last 24 runs
         recent_files = all_files[-24:]
+        hist_df = pd.concat([pd.read_csv(f) for f in recent_files])
+        hist_df['timestamp'] = pd.to_datetime(hist_df['timestamp'])
+
+        selected_market = st.selectbox("Select Market to Analyze", options=sorted(hist_df['symbol'].unique()))
         
-        historical_dfs = []
-        for file in recent_files:
-            df = pd.read_csv(file)
-            df['timestamp'] = pd.to_datetime(df['timestamp'])
-            historical_dfs.append(df)
+        market_data = hist_df[hist_df['symbol'] == selected_market].sort_values('timestamp')
         
-        historical_df = pd.concat(historical_dfs, ignore_index=True)
+        # Plotting
+        chart_data = market_data.set_index('timestamp')[['current_spread', 'target_spread']]
+        st.line_chart(chart_data)
         
-        # Create tabs for each market
-        markets = historical_df['symbol'].unique()
-        tabs = st.tabs(markets)
-        
-        for i, market in enumerate(markets):
-            with tabs[i]:
-                market_data = historical_df[historical_df['symbol'] == market].copy()
-                market_data = market_data.sort_values('timestamp')
-                
-                # Spread chart
-                st.markdown(f"**Spread Trend - {market}**")
-                
-                chart_df = market_data[['timestamp', 'current_spread', 'target_spread']].copy()
-                chart_df = chart_df.set_index('timestamp')
-                
-                st.line_chart(chart_df)
-                
-                # Stats
-                col1, col2, col3 = st.columns(3)
-                
-                with col1:
-                    avg_spread = market_data['current_spread'].mean()
-                    st.metric("Avg Spread (24h)", f"{avg_spread:.6f}")
-                
-                with col2:
-                    avg_diff = market_data['percent_diff'].mean()
-                    st.metric("Avg Deviation", f"{avg_diff:+.2f}%")
-                
-                with col3:
-                    warning_pct = (market_data['status'] == 'Warning').sum() / len(market_data) * 100
-                    st.metric("Warning %", f"{warning_pct:.1f}%")
-    
+        # Detail metrics
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Avg Spread", f"{market_data['current_spread'].mean():.4f}%")
+        c2.metric("Max Spread", f"{market_data['current_spread'].max():.4f}%")
+        c3.metric("Avg DWS", f"{market_data['dws'].mean():.4f}%")
+        c4.metric("Uptime", f"{(market_data['status'] == 'Healthy').mean()*100:.1f}%")
     else:
-        st.info("Need at least 2 hourly checks for historical trends. Check back soon!")
-
+        st.info("Collecting historical data... check back in a few hours.")
 except Exception as e:
-    st.warning(f"Unable to load historical data: {e}")
+    st.error(f"Error loading history: {e}")
 
-# Info Section
+# --- Footer Auto-Refresh ---
 st.markdown("---")
-st.subheader("ℹ️ System Info")
+st.caption(f"Last UI Refresh: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
-col1, col2 = st.columns(2)
-
-with col1:
-    st.markdown("""
-    **How it works:**
-    - 🔄 GitHub Actions runs scraper every hour
-    - 📊 Data automatically committed to repository
-    - 📱 Telegram alerts sent for warnings
-    - 🌐 This dashboard reads from the data folder
-    
-    **Next check:** Within the next hour (at :00)
-    """)
-
-with col2:
-    st.markdown("""
-    **Alert Thresholds:**
-    - ⚠️ Warning: Spread >50% from target
-    - ✅ Healthy: Spread within 50% of target
-    - 📊 Monitors: Spread, DWS, Liquidity Depth
-    
-    **Telegram Commands:**
-    - Check GitHub Actions tab to manually trigger
-    """)
-
-# Footer
-st.markdown("---")
-st.caption(f"Last refreshed: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} • Auto-refresh every 60 seconds")
-
-# Auto-refresh every 60 seconds
-st_autorefresh = st.empty()
-with st_autorefresh:
-    st.markdown("""
-    <meta http-equiv="refresh" content="60">
-    """, unsafe_allow_html=True)
+# Auto-refresh logic
+from streamlit_autorefresh import st_autorefresh
+st_autorefresh(interval=60 * 1000, key="data_refresh")
