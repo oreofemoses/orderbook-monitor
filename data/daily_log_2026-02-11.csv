@@ -22,3 +22,27 @@ timestamp,symbol,event_type,spread,diff,status,notes,depth_1.25x,depth_1.5x
 2026-02-11 19:32:34,SOL_USDT,WARNING_ENTERED,1.0788,331.52,Warning,,$74.9K,$86.6K
 2026-02-11 19:33:17,ETH_NGN,WARNING_CLEARED,0.479,-4.200000000000004,Healthy,,$1197.41M,$1197.41M
 2026-02-11 19:33:35,USDC_NGN,WARNING_CLEARED,0.395,-20.999999999999996,Healthy,,$6540.34M,$7026.74M
+2026-02-11 20:59:20,AAVE_USDT,SCRAPE_FAILED,,,,"Message: 
+Stacktrace:
+#0 0x5556e93eb70a <unknown>
+#1 0x5556e8e73f92 <unknown>
+#2 0x5556e8ec86ce <unknown>
+#3 0x5556e8ec89f1 <unknown>
+#4 0x5556e8f14064 <unknown>
+#5 0x5556e8f1128e <unknown>
+#6 0x5556e8eba6d7 <unknown>
+#7 0x5556e8ebb4c1 <unknown>
+#8 0x5556e93b0caf <unknown>
+#9 0x5556e93b3c9e <unknown>
+#10 0x5556e939eb6e <unknown>
+#11 0x5556e93b4439 <unknown>
+#12 0x5556e9387127 <unknown>
+#13 0x5556e93d9568 <unknown>
+#14 0x5556e93d9793 <unknown>
+#15 0x5556e93ea9e1 <unknown>
+#16 0x7f92964e0aa4 <unknown>
+#17 0x7f929656dc6c <unknown>
+",,
+2026-02-11 21:00:14,DOGE_USDT,WARNING_CLEARED,0.274,5.3846153846153895,Healthy,,$133.0K,$134.5K
+2026-02-11 21:00:58,SHIB_USDT,WARNING_ENTERED,0.186,-53.5,Warning,,$4.2K,$4.5K
+2026-02-11 21:01:04,SOL_USDT,WARNING_CLEARED,0.225,-9.999999999999998,Healthy,,$32.4K,$37.3K
