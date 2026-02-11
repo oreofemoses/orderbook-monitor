@@ -67,12 +67,12 @@ st.subheader("🎯 Current Market Status")
 # Select and rename columns for display
 display_df = latest_df[[
     'symbol', 'status', 'strikes', 'current_spread', 
-    'target_spread', 'percent_diff', 'dws', 'depth_1pct_display'
+    'target_spread', 'percent_diff', 'dws', 'depth_1.25x'
 ]].copy()
 
 display_df.columns = [
     'Market', 'Status', 'Strikes', 'Spread %', 
-    'Target %', 'Diff %', 'DWS %', 'Depth'
+    'Target %', 'Diff %', 'DWS %', 'Depth @ 1.25x'
 ]
 
 def style_status(row):
