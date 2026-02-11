@@ -91,3 +91,60 @@ st.dataframe(
 
 # Footer
 st.caption(f"Last UI Refresh: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} • Auto-refresh active")
+
+st.markdown("---")
+
+# --- Daily Event Logs Section ---
+st.subheader("📅 Daily Event Logs")
+
+col1, col2 = st.columns([2, 1])
+
+with col1:
+    # Get list of available daily log files
+    log_files = sorted([f for f in os.listdir('data') if f.startswith('daily_log_') and f.endswith('.csv')], reverse=True)
+    
+    if log_files:
+        # Extract dates from filenames
+        available_dates = [f.replace('daily_log_', '').replace('.csv', '') for f in log_files]
+        
+        # Date picker
+        selected_date = st.selectbox(
+            "Select date to view events:",
+            options=available_dates,
+            format_func=lambda x: datetime.strptime(x, '%Y-%m-%d').strftime('%B %d, %Y')
+        )
+        
+        if selected_date:
+            log_path = os.path.join('data', f'daily_log_{selected_date}.csv')
+            
+            if os.path.exists(log_path):
+                log_df = pd.read_csv(log_path)
+                
+                # Display event count summary
+                event_counts = log_df['event_type'].value_counts()
+                
+                col_a, col_b, col_c = st.columns(3)
+                with col_a:
+                    st.metric("Total Events", len(log_df))
+                with col_b:
+                    warnings_entered = event_counts.get('WARNING_ENTERED', 0)
+                    st.metric("Warnings Entered", warnings_entered)
+                with col_c:
+                    warnings_cleared = event_counts.get('WARNING_CLEARED', 0)
+                    st.metric("Warnings Cleared", warnings_cleared)
+                
+                # Display the log table
+                st.dataframe(log_df, use_container_width=True, hide_index=True)
+                
+                # Download button
+                csv = log_df.to_csv(index=False)
+                st.download_button(
+                    label=f"📥 Download {selected_date} Log",
+                    data=csv,
+                    file_name=f"daily_log_{selected_date}.csv",
+                    mime="text/csv"
+                )
+            else:
+                st.warning(f"Log file not found for {selected_date}")
+    else:
+        st.info("No daily event logs available yet. Logs will appear after the first scraper run.")
