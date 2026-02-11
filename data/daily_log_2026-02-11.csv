@@ -49,3 +49,25 @@ Stacktrace:
 2026-02-11 11:14:54,SHIB_USDT,WARNING_CLEARED,0.453,13.249999999999998,Healthy,
 2026-02-11 12:01:16,BCH_USDT,WARNING_ENTERED,0.12,-53.846153846153854,Warning,
 2026-02-11 12:03:25,USDC_NGN,WARNING_CLEARED,0.449,-10.199999999999998,Healthy,
+2026-02-11 13:53:16,AAVE_USDT,SCRAPE_FAILED,,,,"Message: 
+Stacktrace:
+#0 0x55c52ffbd70a <unknown>
+#1 0x55c52fa45f92 <unknown>
+#2 0x55c52fa9a6ce <unknown>
+#3 0x55c52fa9a9f1 <unknown>
+#4 0x55c52fae6064 <unknown>
+#5 0x55c52fae328e <unknown>
+#6 0x55c52fa8c6d7 <unknown>
+#7 0x55c52fa8d4c1 <unknown>
+#8 0x55c52ff82caf <unknown>
+#9 0x55c52ff85c9e <unknown>
+#10 0x55c52ff70b6e <unknown>
+#11 0x55c52ff86439 <unknown>
+#12 0x55c52ff59127 <unknown>
+#13 0x55c52ffab568 <unknown>
+#14 0x55c52ffab793 <unknown>
+#15 0x55c52ffbc9e1 <unknown>
+#16 0x7f3663cafaa4 <unknown>
+#17 0x7f3663d3cc6c <unknown>
+"
+2026-02-11 13:53:47,BCH_USDT,WARNING_CLEARED,0.187,-28.076923076923077,Healthy,
