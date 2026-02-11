@@ -258,7 +258,8 @@ def main():
                 completion_msg += f"  Diff: {w['percent_diff']:+.2f}%\n"
                 completion_msg += f"  Strikes: {w['strikes']}\n"
                 completion_msg += f"  DWS: {w['dws']}\n"
-                completion_msg += f"  Depth: {w['depth_1pct_display']}\n"
+                completion_msg += f"  Depth @ 1.25x: {w['depth_1.25x']}\n"
+                completion_msg += f"  Depth @ 1.5x: {w['depth_1.5x']}\n"
         
         send_telegram(completion_msg)
 
