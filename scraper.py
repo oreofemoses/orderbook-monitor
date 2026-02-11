@@ -117,7 +117,7 @@ def log_event(symbol, event_type, row_data):
     path = os.path.join(DATA_DIR, f"daily_log_{today}.csv")
     exists = os.path.exists(path)
     with open(path, 'a', newline='') as f:
-        writer = csv.DictWriter(f, fieldnames=['timestamp', 'symbol', 'event_type', 'spread', 'diff', 'status', 'notes'])
+        writer = csv.DictWriter(f, fieldnames=['timestamp', 'symbol', 'event_type', 'spread', 'diff', 'status', 'notes', 'depth_1.25x', 'depth_1.5x'])
         if not exists: writer.writeheader()
         writer.writerow({
             'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
