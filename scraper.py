@@ -125,6 +125,8 @@ def log_event(symbol, event_type, row_data):
             'event_type': event_type,
             'spread': row_data.get('current_spread'),
             'diff': row_data.get('percent_diff'),
+            'depth_1.25x': row_data.get('depth_1.25x'),
+            'depth_1.5x': row_data.get('depth_1.5x'),
             'status': row_data.get('status'),
             'notes': row_data.get('notes', '')
         })
@@ -192,7 +194,7 @@ def main():
                         if not p_state["start_time"]: p_state["start_time"] = datetime.now().isoformat()
                     else:
                         if prev_status == "Warning":
-                            log_event(symbol, "WARNING_CLEARED", {'current_spread': curr_spread, 'percent_diff': diff, 'status': 'Healthy'})
+                            log_event(symbol, "WARNING_CLEARED", {'current_spread': curr_spread, 'percent_diff': diff, 'status': 'Healthy', 'depth_1.25x': format_depth(depth_25), 'depth_1.5x': format_depth(depth_50)})
                         p_state["consecutive"] = 0
                         p_state["start_time"] = None
                         p_state["last_alert"] = None
@@ -201,7 +203,7 @@ def main():
                     
                     # Log New Warnings
                     if is_poor and prev_status == "Healthy":
-                        log_event(symbol, "WARNING_ENTERED", {'current_spread': curr_spread, 'percent_diff': diff, 'status': 'Warning'})
+                        log_event(symbol, "WARNING_ENTERED", {'current_spread': curr_spread, 'percent_diff': diff, 'status': 'Warning', 'depth_1.25x': format_depth(depth_25), 'depth_1.5x': format_depth(depth_50)})
 
                     # Alert Logic
                     if p_state["consecutive"] >= ALERT_THRESHOLD_CYCLES:
@@ -221,7 +223,7 @@ def main():
                         'symbol': symbol, 'status': 'Warning' if is_poor else 'Healthy',
                         'strikes': p_state["consecutive"], 'current_spread': curr_spread,
                         'target_spread': target, 'percent_diff': round(diff, 2),
-                        'dws': round(dws, 4), 'depth_1pct_display': format_depth(depth_25)
+                        'dws': round(dws, 4), 'depth_1.25x': format_depth(depth_25), 'depth_1.5x': format_depth(depth_50)
                     })
                     success = True
                 except Exception as e:
