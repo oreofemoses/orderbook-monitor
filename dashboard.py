@@ -1,8 +1,15 @@
 import streamlit as st
 import pandas as pd
 import os
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from streamlit_autorefresh import st_autorefresh
+
+# Nigerian timezone (UTC+1)
+NIGERIAN_TZ = timezone(timedelta(hours=1))
+
+def get_nigerian_time():
+    """Returns current time in Nigerian timezone (UTC+1)"""
+    return datetime.now(NIGERIAN_TZ)
 
 # --- Page Configuration ---
 st.set_page_config(
@@ -25,7 +32,15 @@ def load_latest_data():
         return None
     
     df = pd.read_csv('data/latest.csv')
+    
+    # Parse timestamp with timezone awareness
+    # The CSV has timestamps in Nigerian time (UTC+1)
     df['timestamp'] = pd.to_datetime(df['timestamp'])
+    
+    # Make timezone-aware as Nigerian time if naive
+    if df['timestamp'].dt.tz is None:
+        df['timestamp'] = df['timestamp'].dt.tz_localize(NIGERIAN_TZ)
+    
     return df
 
 latest_df = load_latest_data()
@@ -37,13 +52,17 @@ if latest_df is None:
 
 # --- Summary Metrics ---
 last_update = latest_df['timestamp'].max()
-time_diff = datetime.now() - last_update
+
+# Calculate time difference using Nigerian time
+nigerian_now = get_nigerian_time()
+time_diff = nigerian_now - last_update
 minutes_ago = int(time_diff.total_seconds() / 60)
 
 m1, m2, m3, m4 = st.columns(4)
 
 with m1:
-    st.metric("Last Update", last_update.strftime('%H:%M:%S'))
+    # Display time in Nigerian timezone
+    st.metric("Last Update", last_update.strftime('%H:%M:%S WAT'))
 
 with m2:
     healthy_count = (latest_df['status'] == 'Healthy').sum()
@@ -89,8 +108,9 @@ st.dataframe(
     hide_index=True
 )
 
-# Footer
-st.caption(f"Last UI Refresh: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} • Auto-refresh active")
+# Footer - show Nigerian time
+nigerian_now = get_nigerian_time()
+st.caption(f"Last UI Refresh: {nigerian_now.strftime('%Y-%m-%d %H:%M:%S WAT')} • Auto-refresh active")
 
 st.markdown("---")
 
