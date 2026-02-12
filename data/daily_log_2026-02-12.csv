@@ -1,0 +1,3 @@
+timestamp,symbol,event_type,spread,diff,status,notes,depth_1.25x,depth_1.5x
+2026-02-12 03:24:17,AAVE_USDT,WARNING_ENTERED,0.033,-89.00000000000001,Warning,,$2.8K,$3.5K
+2026-02-12 03:26:06,USDT_NGN,WARNING_ENTERED,0.0907,-82.5576923076923,Warning,,$7.79M,$7.79M
