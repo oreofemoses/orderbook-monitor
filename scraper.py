@@ -8,10 +8,11 @@ from selenium.webdriver.chrome.service import Service
 import time
 import os
 import re
-import csv
 import json
 import requests
 from datetime import datetime, timedelta, timezone
+from openpyxl import load_workbook, Workbook
+from openpyxl.styles import PatternFill, Font, Alignment
 
 # --- Configuration ---
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
@@ -120,26 +121,6 @@ def load_state():
 def save_state(state):
     with open(STATE_FILE, 'w') as f: json.dump(state, f)
 
-def log_event(symbol, event_type, row_data):
-    nigerian_time = get_nigerian_time()
-    today = nigerian_time.strftime("%Y-%m-%d")
-    path = os.path.join(DATA_DIR, f"daily_log_{today}.csv")
-    exists = os.path.exists(path)
-    with open(path, 'a', newline='') as f:
-        writer = csv.DictWriter(f, fieldnames=['timestamp', 'symbol', 'event_type', 'spread', 'diff', 'status', 'notes', 'depth_1.25x', 'depth_1.5x'])
-        if not exists: writer.writeheader()
-        writer.writerow({
-            'timestamp': nigerian_time.strftime("%Y-%m-%d %H:%M:%S"),
-            'symbol': symbol,
-            'event_type': event_type,
-            'spread': row_data.get('current_spread'),
-            'diff': row_data.get('percent_diff'),
-            'depth_1.25x': row_data.get('depth_1.25x'),
-            'depth_1.5x': row_data.get('depth_1.5x'),
-            'status': row_data.get('status'),
-            'notes': row_data.get('notes', '')
-        })
-
 def send_telegram(msg):
     if not TELEGRAM_BOT_TOKEN: return
     requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", 
@@ -160,6 +141,166 @@ def init_driver():
     try: return webdriver.Chrome(service=service, options=chrome_options)
     except: return webdriver.Chrome(options=chrome_options)
 
+# --- Excel Logging Functions ---
+
+def get_daily_log_path():
+    """Get path for today's Excel log file"""
+    nigerian_time = get_nigerian_time()
+    today = nigerian_time.strftime("%Y-%m-%d")
+    return os.path.join(DATA_DIR, f"daily_log_{today}.xlsx")
+
+def initialize_daily_log(log_path):
+    """Create new Excel file with initial structure"""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Market Health"
+    
+    # Headers
+    ws['A1'] = 'Market'
+    ws['B1'] = '% Spd'
+    
+    # Style headers
+    header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+    header_font = Font(bold=True, color="FFFFFF")
+    
+    ws['A1'].fill = header_fill
+    ws['A1'].font = header_font
+    ws['B1'].fill = header_fill
+    ws['B1'].font = header_font
+    
+    # Add all markets
+    for idx, (symbol, target) in enumerate(PAIRS, start=2):
+        ws[f'A{idx}'] = symbol
+        ws[f'B{idx}'] = f"{target}%"
+    
+    # Column widths
+    ws.column_dimensions['A'].width = 15
+    ws.column_dimensions['B'].width = 8
+    
+    wb.save(log_path)
+    return wb
+
+def update_daily_log(results_dict):
+    """
+    Update Excel log with new check results
+    results_dict: {symbol: {'status': 'CHECKED'/'WARNING'/'SKIPPED', 'depth_1.25x': val, 'depth_1.5x': val}}
+    """
+    log_path = get_daily_log_path()
+    nigerian_time = get_nigerian_time()
+    check_time = nigerian_time.strftime("%H:%M:%S")
+    
+    # Load or create workbook
+    if os.path.exists(log_path):
+        wb = load_workbook(log_path)
+        ws = wb.active
+    else:
+        wb = initialize_daily_log(log_path)
+        ws = wb.active
+    
+    # Find the next available column (after Market and % Spd)
+    # Check if there's already a Depth column at the end
+    last_col = ws.max_column
+    depth_col_idx = None
+    
+    # Check if last column is "Depth"
+    if ws.cell(1, last_col).value and "Depth" in str(ws.cell(1, last_col).value):
+        depth_col_idx = last_col
+        next_status_col = last_col  # Insert before Depth
+    else:
+        next_status_col = last_col + 1
+    
+    # Add new STATUS and TIME headers
+    from openpyxl.utils import get_column_letter
+    
+    # Count existing checks (pairs of STATUS/TIME columns)
+    check_num = 1
+    for col in range(3, last_col + 1, 2):
+        if ws.cell(1, col).value and "STATUS" in str(ws.cell(1, col).value):
+            check_num += 1
+    
+    status_col = get_column_letter(next_status_col)
+    time_col = get_column_letter(next_status_col + 1)
+    
+    # Headers
+    header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+    header_font = Font(bold=True, color="FFFFFF")
+    
+    ws[f'{status_col}1'] = f'STATUS (CHECK {check_num})'
+    ws[f'{status_col}1'].fill = header_fill
+    ws[f'{status_col}1'].font = header_font
+    ws[f'{status_col}1'].alignment = Alignment(horizontal='center')
+    
+    ws[f'{time_col}1'] = f'TIME (CHECK {check_num})'
+    ws[f'{time_col}1'].fill = header_fill
+    ws[f'{time_col}1'].font = header_font
+    ws[f'{time_col}1'].alignment = Alignment(horizontal='center')
+    
+    # Column widths
+    ws.column_dimensions[status_col].width = 12
+    ws.column_dimensions[time_col].width = 12
+    
+    # Define colors for status
+    checked_fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")  # Light green
+    warning_fill = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")  # Light red
+    skipped_fill = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")  # Light yellow
+    
+    # Update each market row
+    for idx, (symbol, target) in enumerate(PAIRS, start=2):
+        if symbol in results_dict:
+            result = results_dict[symbol]
+            status = result['status']
+            
+            # Status cell
+            status_cell = ws[f'{status_col}{idx}']
+            status_cell.value = status
+            status_cell.alignment = Alignment(horizontal='center')
+            
+            # Color based on status
+            if status == 'CHECKED':
+                status_cell.fill = checked_fill
+            elif status == 'WARNING':
+                status_cell.fill = warning_fill
+            else:  # SKIPPED
+                status_cell.fill = skipped_fill
+            
+            # Time cell
+            time_cell = ws[f'{time_col}{idx}']
+            time_cell.value = check_time
+            time_cell.alignment = Alignment(horizontal='center')
+            
+            # Update or create Depth column (always last)
+            depth_display = f"{result['depth_1.25x']} / {result['depth_1.5x']}"
+            
+            if depth_col_idx:
+                # Update existing Depth column
+                depth_col = get_column_letter(depth_col_idx)
+            else:
+                # Create new Depth column
+                depth_col_idx = next_status_col + 2
+                depth_col = get_column_letter(depth_col_idx)
+                ws[f'{depth_col}1'] = 'Depth (1.25x / 1.5x)'
+                ws[f'{depth_col}1'].fill = header_fill
+                ws[f'{depth_col}1'].font = header_font
+                ws[f'{depth_col}1'].alignment = Alignment(horizontal='center')
+                ws.column_dimensions[depth_col].width = 20
+            
+            depth_cell = ws[f'{depth_col}{idx}']
+            depth_cell.value = depth_display
+            depth_cell.alignment = Alignment(horizontal='center')
+        else:
+            # Mark as SKIPPED if not in results
+            status_cell = ws[f'{status_col}{idx}']
+            status_cell.value = 'SKIPPED'
+            status_cell.fill = skipped_fill
+            status_cell.alignment = Alignment(horizontal='center')
+            
+            time_cell = ws[f'{time_col}{idx}']
+            time_cell.value = check_time
+            time_cell.alignment = Alignment(horizontal='center')
+    
+    wb.save(log_path)
+    print(f"✅ Daily log updated: {log_path}")
+
 # --- Main Execution ---
 
 def main():
@@ -167,6 +308,7 @@ def main():
     state = load_state()
     driver = init_driver()
     final_results = []
+    excel_results = {}  # For Excel logging
     
     send_telegram(f"🔄 <b>Starting Hourly Check</b>\nPairs: {len(PAIRS)}")
 
@@ -203,17 +345,11 @@ def main():
                         if not p_state["start_time"]: 
                             p_state["start_time"] = get_nigerian_time().isoformat()
                     else:
-                        if prev_status == "Warning":
-                            log_event(symbol, "WARNING_CLEARED", {'current_spread': curr_spread, 'percent_diff': diff, 'status': 'Healthy', 'depth_1.25x': format_depth(depth_25), 'depth_1.5x': format_depth(depth_50)})
                         p_state["consecutive"] = 0
                         p_state["start_time"] = None
                         p_state["last_alert"] = None
 
                     state[symbol] = p_state
-                    
-                    # Log New Warnings
-                    if is_poor and prev_status == "Healthy":
-                        log_event(symbol, "WARNING_ENTERED", {'current_spread': curr_spread, 'percent_diff': diff, 'status': 'Warning', 'depth_1.25x': format_depth(depth_25), 'depth_1.5x': format_depth(depth_50)})
 
                     # Alert Logic
                     if p_state["consecutive"] >= ALERT_THRESHOLD_CYCLES:
@@ -221,7 +357,6 @@ def main():
                         cooldown_ok = True
                         if last_alert:
                             last_alert_time = datetime.fromisoformat(last_alert)
-                            # Ensure timezone awareness for comparison
                             if last_alert_time.tzinfo is None:
                                 last_alert_time = last_alert_time.replace(tzinfo=NIGERIAN_TZ)
                             if get_nigerian_time() - last_alert_time < timedelta(minutes=ALERT_COOLDOWN_MINUTES):
@@ -232,6 +367,7 @@ def main():
                             send_telegram(alert_msg)
                             p_state["last_alert"] = get_nigerian_time().isoformat()
 
+                    # Store results for CSV (backward compatibility)
                     final_results.append({
                         'timestamp': get_nigerian_time().strftime('%Y-%m-%d %H:%M:%S'),
                         'symbol': symbol, 'status': 'Warning' if is_poor else 'Healthy',
@@ -239,41 +375,57 @@ def main():
                         'target_spread': target, 'percent_diff': round(diff, 2),
                         'dws': round(dws, 4), 'depth_1.25x': format_depth(depth_25), 'depth_1.5x': format_depth(depth_50)
                     })
+                    
+                    # Store results for Excel
+                    excel_results[symbol] = {
+                        'status': 'WARNING' if is_poor else 'CHECKED',
+                        'depth_1.25x': format_depth(depth_25),
+                        'depth_1.5x': format_depth(depth_50)
+                    }
+                    
                     success = True
                 except Exception as e:
                     if attempt == MAX_ATTEMPTS_PER_PAIR:
-                        log_event(symbol, "SCRAPE_FAILED", {'notes': str(e)})
+                        # Mark as SKIPPED in Excel
+                        excel_results[symbol] = {
+                            'status': 'SKIPPED',
+                            'depth_1.25x': 'N/A',
+                            'depth_1.5x': 'N/A'
+                        }
+                        print(f"❌ Failed to scrape {symbol}: {str(e)}")
                     time.sleep(2)
 
-        # Save Output
+        # Save latest.csv (backward compatibility)
         if final_results:
             new_df = pd.DataFrame(final_results)
-            
-            # Overwrite latest.csv for the main dashboard table
             new_df.to_csv(os.path.join(DATA_DIR, "latest.csv"), index=False)
-            
             print(f"✅ Data saved to latest.csv")
+        
+        # Update Excel daily log
+        update_daily_log(excel_results)
         
         save_state(state)
         
-        # Build detailed completion message
+        # Build completion message
         warnings = [r for r in final_results if r['status'] == 'Warning']
         total_pairs = len(final_results)
+        skipped_count = len([r for r in excel_results.values() if r['status'] == 'SKIPPED'])
         
         completion_msg = f"✅ <b>Check Complete</b>\n"
         completion_msg += f"Total Pairs: {total_pairs}\n"
         completion_msg += f"Warnings: {len(warnings)}\n"
+        completion_msg += f"Skipped: {skipped_count}\n"
         
         if warnings:
             completion_msg += f"\n<b>⚠️ Markets with Warnings:</b>\n"
-            for w in warnings:
+            for w in warnings[:5]:  # Limit to first 5 to avoid long messages
                 completion_msg += f"\n<b>{w['symbol']}</b>\n"
                 completion_msg += f"  Spread: {w['current_spread']}% (Target: {w['target_spread']}%)\n"
                 completion_msg += f"  Diff: {w['percent_diff']:+.2f}%\n"
                 completion_msg += f"  Strikes: {w['strikes']}\n"
-                completion_msg += f"  DWS: {w['dws']}\n"
-                completion_msg += f"  Depth @ 1.25x: {w['depth_1.25x']}\n"
-                completion_msg += f"  Depth @ 1.5x: {w['depth_1.5x']}\n"
+            
+            if len(warnings) > 5:
+                completion_msg += f"\n... and {len(warnings) - 5} more warnings"
         
         send_telegram(completion_msg)
 
