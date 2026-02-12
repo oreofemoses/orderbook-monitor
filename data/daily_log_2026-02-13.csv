@@ -1,0 +1,27 @@
+timestamp,symbol,event_type,spread,diff,status,notes,depth_1.25x,depth_1.5x
+2026-02-13 00:48:35,AAVE_USDT,SCRAPE_FAILED,,,,"Message: 
+Stacktrace:
+#0 0x55cee851f70a <unknown>
+#1 0x55cee7fa7f92 <unknown>
+#2 0x55cee7ffc6ce <unknown>
+#3 0x55cee7ffc9f1 <unknown>
+#4 0x55cee8048064 <unknown>
+#5 0x55cee804528e <unknown>
+#6 0x55cee7fee6d7 <unknown>
+#7 0x55cee7fef4c1 <unknown>
+#8 0x55cee84e4caf <unknown>
+#9 0x55cee84e7c9e <unknown>
+#10 0x55cee84d2b6e <unknown>
+#11 0x55cee84e8439 <unknown>
+#12 0x55cee84bb127 <unknown>
+#13 0x55cee850d568 <unknown>
+#14 0x55cee850d793 <unknown>
+#15 0x55cee851e9e1 <unknown>
+#16 0x7fcf14417aa4 <unknown>
+#17 0x7fcf144a4c6c <unknown>
+",,
+2026-02-13 00:49:24,DASH_USDT,WARNING_CLEARED,2.0124,0.6199999999999983,Healthy,,$29.4K,$32.0K
+2026-02-13 00:49:54,NEAR_USDT,WARNING_ENTERED,1.0598,-47.01,Warning,,$1.4K,$2.4K
+2026-02-13 00:50:03,POL_USDT,WARNING_CLEARED,0.522,4.400000000000004,Healthy,,$33.9K,$39.9K
+2026-02-13 00:50:21,SOL_USDT,WARNING_CLEARED,0.2,-19.999999999999996,Healthy,,$25.0K,$34.4K
+2026-02-13 00:50:27,SUI_USDT,WARNING_CLEARED,1.917,-4.149999999999999,Healthy,,$4.1K,$4.1K
