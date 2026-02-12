@@ -11,11 +11,14 @@ import re
 import csv
 import json
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 # --- Configuration ---
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
+
+# Nigerian timezone (UTC+1)
+NIGERIAN_TZ = timezone(timedelta(hours=1))
 
 # Files & Folders
 DATA_DIR = "data"
@@ -45,6 +48,11 @@ PAIRS = [
     ['DASH_NGN', 0.50], ['LTC_NGN', 0.50], ['SOL_NGN', 0.50],
     ['USDC_NGN', 0.50]
 ]
+
+# --- Helper function to get current Nigerian time ---
+def get_nigerian_time():
+    """Returns current time in Nigerian timezone (UTC+1)"""
+    return datetime.now(NIGERIAN_TZ)
 
 # --- Core Computation Functions ---
 
@@ -113,14 +121,15 @@ def save_state(state):
     with open(STATE_FILE, 'w') as f: json.dump(state, f)
 
 def log_event(symbol, event_type, row_data):
-    today = datetime.now().strftime("%Y-%m-%d")
+    nigerian_time = get_nigerian_time()
+    today = nigerian_time.strftime("%Y-%m-%d")
     path = os.path.join(DATA_DIR, f"daily_log_{today}.csv")
     exists = os.path.exists(path)
     with open(path, 'a', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=['timestamp', 'symbol', 'event_type', 'spread', 'diff', 'status', 'notes', 'depth_1.25x', 'depth_1.5x'])
         if not exists: writer.writeheader()
         writer.writerow({
-            'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            'timestamp': nigerian_time.strftime("%Y-%m-%d %H:%M:%S"),
             'symbol': symbol,
             'event_type': event_type,
             'spread': row_data.get('current_spread'),
@@ -191,7 +200,8 @@ def main():
                     
                     if is_poor:
                         p_state["consecutive"] += 1
-                        if not p_state["start_time"]: p_state["start_time"] = datetime.now().isoformat()
+                        if not p_state["start_time"]: 
+                            p_state["start_time"] = get_nigerian_time().isoformat()
                     else:
                         if prev_status == "Warning":
                             log_event(symbol, "WARNING_CLEARED", {'current_spread': curr_spread, 'percent_diff': diff, 'status': 'Healthy', 'depth_1.25x': format_depth(depth_25), 'depth_1.5x': format_depth(depth_50)})
@@ -210,16 +220,20 @@ def main():
                         last_alert = p_state.get("last_alert")
                         cooldown_ok = True
                         if last_alert:
-                            if datetime.now() - datetime.fromisoformat(last_alert) < timedelta(minutes=ALERT_COOLDOWN_MINUTES):
+                            last_alert_time = datetime.fromisoformat(last_alert)
+                            # Ensure timezone awareness for comparison
+                            if last_alert_time.tzinfo is None:
+                                last_alert_time = last_alert_time.replace(tzinfo=NIGERIAN_TZ)
+                            if get_nigerian_time() - last_alert_time < timedelta(minutes=ALERT_COOLDOWN_MINUTES):
                                 cooldown_ok = False
                         
                         if cooldown_ok:
                             alert_msg = f"⚠️ <b>ALERT: {symbol}</b>\nSpread: {curr_spread}%\nDiff: {diff:+.2f}%\nStrikes: {p_state['consecutive']}\nDepth 25%: {format_depth(depth_25)}"
                             send_telegram(alert_msg)
-                            p_state["last_alert"] = datetime.now().isoformat()
+                            p_state["last_alert"] = get_nigerian_time().isoformat()
 
                     final_results.append({
-                        'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                        'timestamp': get_nigerian_time().strftime('%Y-%m-%d %H:%M:%S'),
                         'symbol': symbol, 'status': 'Warning' if is_poor else 'Healthy',
                         'strikes': p_state["consecutive"], 'current_spread': curr_spread,
                         'target_spread': target, 'percent_diff': round(diff, 2),
