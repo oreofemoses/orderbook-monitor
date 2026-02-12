@@ -121,3 +121,28 @@ Stacktrace:
 2026-02-12 20:32:05,POL_USDT,WARNING_ENTERED,0.0634,-87.32,Warning,,$4.6K,$4.6K
 2026-02-12 20:32:24,SOL_USDT,WARNING_CLEARED,0.251,0.40000000000000036,Healthy,,$18.0K,$24.3K
 2026-02-12 20:33:05,QDX_NGN,WARNING_ENTERED,4.529,-54.71,Warning,,$537.8K,$651.2K
+2026-02-12 21:55:42,AAVE_USDT,SCRAPE_FAILED,,,,"Message: 
+Stacktrace:
+#0 0x55edae39f70a <unknown>
+#1 0x55edade27f92 <unknown>
+#2 0x55edade7c6ce <unknown>
+#3 0x55edade7c9f1 <unknown>
+#4 0x55edadec8064 <unknown>
+#5 0x55edadec528e <unknown>
+#6 0x55edade6e6d7 <unknown>
+#7 0x55edade6f4c1 <unknown>
+#8 0x55edae364caf <unknown>
+#9 0x55edae367c9e <unknown>
+#10 0x55edae352b6e <unknown>
+#11 0x55edae368439 <unknown>
+#12 0x55edae33b127 <unknown>
+#13 0x55edae38d568 <unknown>
+#14 0x55edae38d793 <unknown>
+#15 0x55edae39e9e1 <unknown>
+#16 0x7f76e3821aa4 <unknown>
+#17 0x7f76e38aec6c <unknown>
+",,
+2026-02-12 21:57:05,LINK_USDT,WARNING_CLEARED,0.291,11.923076923076911,Healthy,,$110.8K,$127.7K
+2026-02-12 21:57:12,NEAR_USDT,WARNING_CLEARED,1.973,-1.3499999999999956,Healthy,,$5.2K,$5.2K
+2026-02-12 21:57:21,POL_USDT,WARNING_CLEARED,0.542,8.400000000000007,Healthy,,$26.2K,$26.2K
+2026-02-12 22:03:25,QDX_USDT,SCRAPE_FAILED,,,,"HTTPConnectionPool(host='localhost', port=52229): Read timed out. (read timeout=120)",,
