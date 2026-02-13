@@ -14,7 +14,10 @@ from datetime import datetime, timedelta, timezone
 
 # --- Configuration ---
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
-TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
+# Support multiple chat IDs (comma-separated in environment variable)
+# Example: TELEGRAM_CHAT_IDS="123456789,987654321"
+chat_ids_str = os.getenv('TELEGRAM_CHAT_IDS')
+TELEGRAM_CHAT_IDS = chat_ids_str.split(',') if chat_ids_str else []
 
 # Nigerian timezone (UTC+1)
 NIGERIAN_TZ = timezone(timedelta(hours=1))
@@ -181,9 +184,14 @@ def update_daily_log(all_results):
     print(f"✅ Daily log updated: {path}")
 
 def send_telegram(msg):
-    if not TELEGRAM_BOT_TOKEN: return
-    requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", 
-                 json={'chat_id': TELEGRAM_CHAT_ID, 'text': msg, 'parse_mode': 'HTML'})
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_IDS: return
+    for chat_id in TELEGRAM_CHAT_IDS:
+        chat_id = chat_id.strip()  # Remove any whitespace
+        if chat_id:  # Only send if chat_id exists
+            requests.post(
+                f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", 
+                json={'chat_id': chat_id, 'text': msg, 'parse_mode': 'HTML'}
+            )
 
 def init_driver():
     chrome_options = Options()
