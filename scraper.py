@@ -8,7 +8,6 @@ from selenium.webdriver.chrome.service import Service
 import time
 import os
 import re
-import csv
 import json
 import requests
 from datetime import datetime, timedelta, timezone
@@ -120,25 +119,66 @@ def load_state():
 def save_state(state):
     with open(STATE_FILE, 'w') as f: json.dump(state, f)
 
-def log_event(symbol, event_type, row_data):
+def update_daily_log(all_results):
+    """
+    Updates the daily log in horizontal spreadsheet format.
+    Each run adds a new STATUS/TIME column pair.
+    DEPTH column always stays last and gets updated.
+    
+    Format:
+    Market | % Spd | STATUS (CHECK 1) | TIME (CHECK 1) | STATUS (CHECK 2) | TIME (CHECK 2) | ... | DEPTH
+    """
     nigerian_time = get_nigerian_time()
     today = nigerian_time.strftime("%Y-%m-%d")
     path = os.path.join(DATA_DIR, f"daily_log_{today}.csv")
-    exists = os.path.exists(path)
-    with open(path, 'a', newline='') as f:
-        writer = csv.DictWriter(f, fieldnames=['timestamp', 'symbol', 'event_type', 'spread', 'diff', 'status', 'notes', 'depth_1.25x', 'depth_1.5x'])
-        if not exists: writer.writeheader()
-        writer.writerow({
-            'timestamp': nigerian_time.strftime("%Y-%m-%d %H:%M:%S"),
-            'symbol': symbol,
-            'event_type': event_type,
-            'spread': row_data.get('current_spread'),
-            'diff': row_data.get('percent_diff'),
-            'depth_1.25x': row_data.get('depth_1.25x'),
-            'depth_1.5x': row_data.get('depth_1.5x'),
-            'status': row_data.get('status'),
-            'notes': row_data.get('notes', '')
+    current_time = nigerian_time.strftime("%H:%M:%S")
+    
+    # Read existing log or create new structure
+    if os.path.exists(path):
+        df = pd.read_csv(path)
+    else:
+        # Create new log with all markets
+        df = pd.DataFrame({
+            'Market': [pair[0] for pair in PAIRS],
+            '% Spd': [f"{pair[1]}%" for pair in PAIRS]
         })
+    
+    # Determine next check number
+    status_cols = [col for col in df.columns if col.startswith('STATUS (CHECK')]
+    check_num = len(status_cols) + 1
+    
+    status_col = f'STATUS (CHECK {check_num})'
+    time_col = f'TIME (CHECK {check_num})'
+    
+    # Create a mapping of results by symbol
+    results_map = {r['symbol']: r for r in all_results}
+    
+    # Add new STATUS and TIME columns
+    df[status_col] = df['Market'].apply(
+        lambda m: results_map[m]['status'].upper() if m in results_map else 'SKIPPED'
+    )
+    df[time_col] = df['Market'].apply(
+        lambda m: current_time if m in results_map else ''
+    )
+    
+    # Update or create DEPTH column (always last)
+    # First, check if DEPTH column exists and preserve existing values for skipped markets
+    if 'DEPTH' in df.columns:
+        df['DEPTH'] = df.apply(
+            lambda row: f"{results_map[row['Market']]['depth_1.25x']} / {results_map[row['Market']]['depth_1.5x']}" 
+            if row['Market'] in results_map 
+            else row['DEPTH'],
+            axis=1
+        )
+    else:
+        df['DEPTH'] = df['Market'].apply(
+            lambda m: f"{results_map[m]['depth_1.25x']} / {results_map[m]['depth_1.5x']}" 
+            if m in results_map else ''
+        )
+    
+    # Save back to CSV
+    df.to_csv(path, index=False)
+    print(f"✅ Daily log updated: {path}")
 
 def send_telegram(msg):
     if not TELEGRAM_BOT_TOKEN: return
@@ -203,17 +243,11 @@ def main():
                         if not p_state["start_time"]: 
                             p_state["start_time"] = get_nigerian_time().isoformat()
                     else:
-                        if prev_status == "Warning":
-                            log_event(symbol, "WARNING_CLEARED", {'current_spread': curr_spread, 'percent_diff': diff, 'status': 'Healthy', 'depth_1.25x': format_depth(depth_25), 'depth_1.5x': format_depth(depth_50)})
                         p_state["consecutive"] = 0
                         p_state["start_time"] = None
                         p_state["last_alert"] = None
 
                     state[symbol] = p_state
-                    
-                    # Log New Warnings
-                    if is_poor and prev_status == "Healthy":
-                        log_event(symbol, "WARNING_ENTERED", {'current_spread': curr_spread, 'percent_diff': diff, 'status': 'Warning', 'depth_1.25x': format_depth(depth_25), 'depth_1.5x': format_depth(depth_50)})
 
                     # Alert Logic
                     if p_state["consecutive"] >= ALERT_THRESHOLD_CYCLES:
@@ -234,24 +268,30 @@ def main():
 
                     final_results.append({
                         'timestamp': get_nigerian_time().strftime('%Y-%m-%d %H:%M:%S'),
-                        'symbol': symbol, 'status': 'Warning' if is_poor else 'Healthy',
-                        'strikes': p_state["consecutive"], 'current_spread': curr_spread,
-                        'target_spread': target, 'percent_diff': round(diff, 2),
-                        'dws': round(dws, 4), 'depth_1.25x': format_depth(depth_25), 'depth_1.5x': format_depth(depth_50)
+                        'symbol': symbol, 
+                        'status': 'Warning' if is_poor else 'Checked',
+                        'strikes': p_state["consecutive"], 
+                        'current_spread': curr_spread,
+                        'target_spread': target, 
+                        'percent_diff': round(diff, 2),
+                        'dws': round(dws, 4), 
+                        'depth_1.25x': format_depth(depth_25), 
+                        'depth_1.5x': format_depth(depth_50)
                     })
                     success = True
                 except Exception as e:
                     if attempt == MAX_ATTEMPTS_PER_PAIR:
-                        log_event(symbol, "SCRAPE_FAILED", {'notes': str(e)})
+                        # Still add to results as failed for logging purposes
+                        pass
                     time.sleep(2)
 
-        # Save Output
+        # Update the new horizontal daily log
+        update_daily_log(final_results)
+        
+        # Save latest.csv for the main dashboard table (keep existing format)
         if final_results:
             new_df = pd.DataFrame(final_results)
-            
-            # Overwrite latest.csv for the main dashboard table
             new_df.to_csv(os.path.join(DATA_DIR, "latest.csv"), index=False)
-            
             print(f"✅ Data saved to latest.csv")
         
         save_state(state)
