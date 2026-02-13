@@ -17,9 +17,7 @@ TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 # Support multiple chat IDs (comma-separated in environment variable)
 # Example: TELEGRAM_CHAT_IDS="123456789,987654321"
 chat_ids_str = os.getenv('TELEGRAM_CHAT_ID')
-print(chat_ids_str)
 TELEGRAM_CHAT_IDS = chat_ids_str.split(',') if chat_ids_str else []
-print(TELEGRAM_CHAT_IDS)
 
 # Nigerian timezone (UTC+1)
 NIGERIAN_TZ = timezone(timedelta(hours=1))
@@ -180,6 +178,11 @@ def update_daily_log(all_results):
             lambda m: f"{results_map[m]['depth_1.25x']} / {results_map[m]['depth_1.5x']}" 
             if m in results_map else ''
         )
+    
+    # Move DEPTH column to the end (always last)
+    cols = [col for col in df.columns if col != 'DEPTH']
+    cols.append('DEPTH')
+    df = df[cols]
     
     # Save back to CSV
     df.to_csv(path, index=False)
