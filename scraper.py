@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 # Support multiple chat IDs (comma-separated in environment variable)
 # Example: TELEGRAM_CHAT_IDS="123456789,987654321"
-chat_ids_str = os.getenv('TELEGRAM_CHAT_IDS')
+chat_ids_str = os.getenv('TELEGRAM_CHAT_ID')
 print(chat_ids_str)
 TELEGRAM_CHAT_IDS = chat_ids_str.split(',') if chat_ids_str else []
 print(TELEGRAM_CHAT_IDS)
