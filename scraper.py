@@ -45,10 +45,10 @@ PAIRS = [
     ['SUI_USDT', 2.00], ['TON_USDT', 0.30], ['TRX_USDT', 0.30],
     ['USDC_USDT', 0.02], ['WIF_USDT', 2.00], ['XLM_USDT', 0.30],
     ['XRP_USDT', 0.30], ['XYO_USDT', 1.00], ['ZKSync_USDT', 2.00],
-    ['BTC_NGN', 0.50], ['USDT_NGN', 0.52], ['QDX_NGN', 10.00],
-    ['ETH_NGN', 0.50], ['TRX_NGN', 0.50], ['XRP_NGN', 0.50],
-    ['DASH_NGN', 0.50], ['LTC_NGN', 0.50], ['SOL_NGN', 0.50],
-    ['USDC_NGN', 0.50]
+    ['BTC_NGN', 1.10], ['USDT_NGN', 1.25], ['QDX_NGN', 10.00],
+    ['ETH_NGN', 1.15], ['TRX_NGN', 1.15], ['XRP_NGN', 0.50],
+    ['DASH_NGN', 0.50], ['LTC_NGN', 0.50], ['SOL_NGN', 1.20],
+    ['USDC_NGN', 1.20]
 ]
 
 # --- Helper function to get current Nigerian time ---
