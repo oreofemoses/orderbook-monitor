@@ -156,10 +156,42 @@ def style_status_cell(val):
         return 'background-color: rgba(255, 165, 0, 0.20)'
     return ''
 
-# Apply styling to all STATUS columns
+# Get all status columns for styling
 status_cols = [col for col in daily_log.columns if col.startswith('STATUS (CHECK')]
 
-styled_df = daily_log.style.applymap(
+# Reorder columns: Market, % Spd, then CHECK columns in reverse (latest first), then DEPTH
+base_cols = ['Market', '% Spd']
+check_cols = []
+for col in daily_log.columns:
+    if col.startswith('STATUS (CHECK') or col.startswith('TIME (CHECK'):
+        check_cols.append(col)
+
+# Sort check columns in reverse order (latest first)
+# Extract check numbers and sort descending
+check_pairs = []
+status_cols_sorted = [col for col in check_cols if col.startswith('STATUS (CHECK')]
+for status_col in status_cols_sorted:
+    check_num = int(status_col.split('CHECK ')[1].rstrip(')'))
+    time_col = f'TIME (CHECK {check_num})'
+    check_pairs.append((check_num, status_col, time_col))
+
+check_pairs.sort(reverse=True)  # Sort by check number descending (latest first)
+
+# Build ordered column list
+ordered_cols = base_cols.copy()
+for _, status_col, time_col in check_pairs:
+    ordered_cols.append(status_col)
+    ordered_cols.append(time_col)
+
+# Add DEPTH at the end if it exists
+if 'DEPTH' in daily_log.columns:
+    ordered_cols.append('DEPTH')
+
+# Reorder the dataframe
+daily_log_display = daily_log[ordered_cols]
+
+# Apply styling
+styled_df = daily_log_display.style.applymap(
     style_status_cell,
     subset=status_cols
 )
