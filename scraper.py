@@ -31,6 +31,7 @@ BASE_URL = "https://pro.quidax.io/en_US/trade/"
 ALERT_THRESHOLD_CYCLES = 3
 ALERT_COOLDOWN_MINUTES = 30
 MAX_ATTEMPTS_PER_PAIR = 3
+MIN_ORDERBOOK_LAYERS = 10  # Minimum layers required on each side
 
 PAIRS = [
     ['AAVE_USDT', 0.30], ['ADA_USDT', 0.26], ['ALGO_USDT', 2.00],
@@ -88,7 +89,11 @@ def parse_orderbook(text: str):
                 row = {"price": p, "amount": a, "total": t}
                 if side == "asks": asks.append(row)
                 else: bids.append(row)
-    return pd.DataFrame(asks), pd.DataFrame(bids), spread_pct
+    asks_df = pd.DataFrame(asks)
+    bids_df = pd.DataFrame(bids)
+    ask_layers = len(asks_df)
+    bid_layers = len(bids_df)
+    return asks_df, bids_df, spread_pct, ask_layers, bid_layers
 
 def calculate_liquidity_depth(asks_df, bids_df, spread_pct_range):
     if asks_df.empty or bids_df.empty: return 0
@@ -237,12 +242,20 @@ def main():
                     element = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, selector)))
                     wait.until(lambda d: "Spread" in element.text and any(c.isdigit() for c in element.text))
                     
-                    asks_df, bids_df, curr_spread = parse_orderbook(element.text)
+                    asks_df, bids_df, curr_spread, ask_layers, bid_layers = parse_orderbook(element.text)
                     if curr_spread is None: raise ValueError("No spread data")
 
-                    # Calculations
+                    # Spread anomaly check
                     diff = ((curr_spread - target) / target) * 100
-                    is_poor = (diff > 100 or diff < -40)
+                    spread_anomaly = (diff > 100 or diff < -40)
+                    
+                    # Shallow orderbook check
+                    shallow_orderbook = (ask_layers < MIN_ORDERBOOK_LAYERS or bid_layers < MIN_ORDERBOOK_LAYERS)
+                    
+                    # Combined check: EITHER anomaly triggers warning
+                    is_poor = spread_anomaly or shallow_orderbook
+
+                    # Calculations
                     dws = calculate_dws(asks_df, bids_df)
                     depth_25 = calculate_liquidity_depth(asks_df, bids_df, curr_spread * 1.25)
                     depth_50 = calculate_liquidity_depth(asks_df, bids_df, curr_spread * 1.5)
@@ -275,7 +288,24 @@ def main():
                                 cooldown_ok = False
                         
                         if cooldown_ok:
-                            alert_msg = f"⚠️ <b>ALERT: {symbol}</b>\nSpread: {curr_spread}%\nDiff: {diff:+.2f}%\nStrikes: {p_state['consecutive']}\nDepth 25%: {format_depth(depth_25)}"
+                            # Build alert message with anomaly details
+                            alert_msg = f"⚠️ <b>ALERT: {symbol}</b>\n"
+                            alert_msg += f"Spread: {curr_spread}% (Target: {target}%)\n"
+                            alert_msg += f"Diff: {diff:+.2f}%\n"
+                            alert_msg += f"Ask Layers: {ask_layers}\n"
+                            alert_msg += f"Bid Layers: {bid_layers}\n"
+                            alert_msg += f"Strikes: {p_state['consecutive']}\n"
+                            alert_msg += f"Depth @ 1.25x: {format_depth(depth_25)}\n"
+                            alert_msg += f"Depth @ 1.5x: {format_depth(depth_50)}"
+                            
+                            # Add anomaly indicators
+                            if spread_anomaly and shallow_orderbook:
+                                alert_msg += f"\n🚨 BOTH spread & orderbook issues"
+                            elif spread_anomaly:
+                                alert_msg += f"\n📊 Spread anomaly detected"
+                            elif shallow_orderbook:
+                                alert_msg += f"\n📉 Shallow orderbook detected"
+                            
                             send_telegram(alert_msg)
                             p_state["last_alert"] = get_nigerian_time().isoformat()
 
@@ -287,6 +317,8 @@ def main():
                         'current_spread': curr_spread,
                         'target_spread': target, 
                         'percent_diff': round(diff, 2),
+                        'ask_layers': ask_layers,
+                        'bid_layers': bid_layers,
                         'dws': round(dws, 4), 
                         'depth_1.25x': format_depth(depth_25), 
                         'depth_1.5x': format_depth(depth_50)
@@ -323,6 +355,8 @@ def main():
                 completion_msg += f"\n<b>{w['symbol']}</b>\n"
                 completion_msg += f"  Spread: {w['current_spread']}% (Target: {w['target_spread']}%)\n"
                 completion_msg += f"  Diff: {w['percent_diff']:+.2f}%\n"
+                completion_msg += f"  Ask Layers: {w['ask_layers']}\n"
+                completion_msg += f"  Bid Layers: {w['bid_layers']}\n"
                 completion_msg += f"  Strikes: {w['strikes']}\n"
                 completion_msg += f"  DWS: {w['dws']}\n"
                 completion_msg += f"  Depth @ 1.25x: {w['depth_1.25x']}\n"
