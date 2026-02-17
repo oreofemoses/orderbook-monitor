@@ -31,7 +31,8 @@ BASE_URL = "https://pro.quidax.io/en_US/trade/"
 ALERT_THRESHOLD_CYCLES = 3
 ALERT_COOLDOWN_MINUTES = 30
 MAX_ATTEMPTS_PER_PAIR = 3
-MIN_ORDERBOOK_LAYERS = 10  # Minimum layers required on each side
+MIN_ORDERBOOK_LAYERS = 10      # Minimum layers required on each side
+MID_PRICE_ALERT_THRESHOLD = 25  # % change in mid-price that triggers a one-shot alert
 
 PAIRS = [
     ['AAVE_USDT', 0.30], ['ADA_USDT', 0.26], ['ALGO_USDT', 2.00],
@@ -260,9 +261,28 @@ def main():
                     depth_25 = calculate_liquidity_depth(asks_df, bids_df, curr_spread * 1.25)
                     depth_50 = calculate_liquidity_depth(asks_df, bids_df, curr_spread * 1.5)
 
+                    # Mid-price calculation
+                    mid_price = (asks_df['price'].min() + bids_df['price'].max()) / 2
+
                     # State Logic
-                    p_state = state.get(symbol, {"consecutive": 0, "last_alert": None, "start_time": None})
+                    p_state = state.get(symbol, {"consecutive": 0, "last_alert": None, "start_time": None, "last_mid_price": None})
                     prev_status = "Warning" if p_state["consecutive"] > 0 else "Healthy"
+
+                    # Mid-price check (one-shot alert, no strikes)
+                    last_mid_price = p_state.get("last_mid_price")
+                    if last_mid_price is None:
+                        # First run — just store and skip the check
+                        pass
+                    else:
+                        price_change_pct = ((mid_price - last_mid_price) / last_mid_price) * 100
+                        if abs(price_change_pct) >= MID_PRICE_ALERT_THRESHOLD:
+                            direction = "📈" if price_change_pct > 0 else "📉"
+                            price_alert_msg = f"{direction} <b>PRICE MOVEMENT ALERT: {symbol}</b>\n"
+                            price_alert_msg += f"Previous Mid: {last_mid_price:,.6g}\n"
+                            price_alert_msg += f"Current Mid:  {mid_price:,.6g}\n"
+                            price_alert_msg += f"Change: {price_change_pct:+.2f}%"
+                            send_telegram(price_alert_msg)
+                    p_state["last_mid_price"] = mid_price
                     
                     if is_poor:
                         p_state["consecutive"] += 1
