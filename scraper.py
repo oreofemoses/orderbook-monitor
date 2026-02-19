@@ -294,6 +294,7 @@ def main():
                         diff = ((curr_spread - target) / target) * 100
                         spread_anomaly = (diff > 100 or diff < -40)
                     else:
+                        print(curr_spread, ask_layers, bid_layers)
                         diff = None          # No target to compare against
                         spread_anomaly = False  # Never flag spread for monitor-only pairs
 
