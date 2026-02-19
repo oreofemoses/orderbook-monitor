@@ -142,15 +142,49 @@ def update_daily_log(all_results):
 
     Format:
     Market | % Spd | STATUS (CHECK 1) | TIME (CHECK 1) | STATUS (CHECK 2) | TIME (CHECK 2) | ... | DEPTH
+
+    If the PAIRS list has grown since the log was first created today, missing
+    pairs are appended with blank cells for all previous checks so they are
+    correctly tracked from the current check onward.
     """
     nigerian_time = get_nigerian_time()
     today = nigerian_time.strftime("%Y-%m-%d")
     path = os.path.join(DATA_DIR, f"daily_log_{today}.csv")
     current_time = nigerian_time.strftime("%H:%M:%S")
 
+    # Build a lookup of all current pairs for reconciliation
+    pairs_lookup = {pair[0]: pair[1] for pair in PAIRS}
+
     # Read existing log or create new structure
     if os.path.exists(path):
         df = pd.read_csv(path)
+
+        # --- Reconcile: find pairs in PAIRS that are missing from the log ---
+        existing_markets = set(df['Market'].tolist())
+        missing_pairs = [(sym, tgt) for sym, tgt in PAIRS if sym not in existing_markets]
+
+        if missing_pairs:
+            # Build skeleton rows for the missing pairs.
+            # All previous STATUS/TIME columns get empty strings; DEPTH gets '' too.
+            existing_check_cols = [c for c in df.columns if c not in ('Market', '% Spd', 'DEPTH')]
+            new_rows = []
+            for sym, tgt in missing_pairs:
+                row = {
+                    'Market': sym,
+                    '% Spd': f"{tgt}%" if tgt is not None else "N/A",
+                }
+                # Fill every existing STATUS/TIME column with an empty string
+                for col in existing_check_cols:
+                    row[col] = ''
+                # Fill DEPTH if it exists
+                if 'DEPTH' in df.columns:
+                    row['DEPTH'] = ''
+                new_rows.append(row)
+
+            new_rows_df = pd.DataFrame(new_rows, columns=df.columns)
+            df = pd.concat([df, new_rows_df], ignore_index=True)
+            print(f"ℹ️  Added {len(missing_pairs)} new pair(s) to today's log: {[p[0] for p in missing_pairs]}")
+
     else:
         # Create new log with all markets
         # % Spd shows "N/A" for monitor-only pairs
