@@ -283,18 +283,7 @@ def main():
                     wait = WebDriverWait(driver, 15)
                     selector = ".newTrade-depth-block.depath-index-container"
                     element = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, selector)))
-
-                    # Soft wait: we want the spread value to appear, but some pairs
-                    # (e.g. USDT_CNGN) have an empty bid wall so digits may never
-                    # appear on both sides. If the full condition times out, we fall
-                    # through and attempt to parse whatever is already in element.text.
-                    # parse_orderbook + the curr_spread None-check below will be the
-                    # true gate on whether the data is usable.
-                    try:
-                        wait.until(lambda d: "Spread" in element.text and any(c.isdigit() for c in element.text))
-                    except Exception:
-                        # Partial load — continue and let the parser decide
-                        pass
+                    wait.until(lambda d: "Spread" in element.text and any(c.isdigit() for c in element.text))
 
                     asks_df, bids_df, curr_spread, ask_layers, bid_layers = parse_orderbook(element.text)
                     if curr_spread is None: raise ValueError("No spread data")
