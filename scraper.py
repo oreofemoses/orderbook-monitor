@@ -81,16 +81,14 @@ def parse_number(value):
 
 def parse_orderbook(text: str):
     lines = text.split("\n")
-    asks, bids, side, spread_pct, mid_price = [], [], "asks", None, None
+    asks, bids, side, spread_pct = [], [], "asks", None
     for line in lines:
         if "Spread" in line:
             side = "bids"
             continue
         parts = line.split()
         if len(parts) == 2 and "(" in parts[1]:
-            try:
-                spread_pct = float(parts[1].replace('(', '').replace('%)', '').replace('+', ''))
-                mid_price = float(parts[0].replace(',', ''))  # Mid-price sits beside the spread %
+            try: spread_pct = float(parts[1].replace('(', '').replace('%)', '').replace('+', ''))
             except: pass
         elif len(parts) == 3:
             p, a, t = parse_number(parts[0]), parse_number(parts[1]), parse_number(parts[2])
@@ -102,7 +100,7 @@ def parse_orderbook(text: str):
     bids_df = pd.DataFrame(bids)
     ask_layers = len(asks_df)
     bid_layers = len(bids_df)
-    return asks_df, bids_df, spread_pct, mid_price, ask_layers, bid_layers
+    return asks_df, bids_df, spread_pct, ask_layers, bid_layers
 
 def calculate_liquidity_depth(asks_df, bids_df, spread_pct_range):
     if asks_df.empty or bids_df.empty: return 0
@@ -285,20 +283,9 @@ def main():
                     wait = WebDriverWait(driver, 15)
                     selector = ".newTrade-depth-block.depath-index-container"
                     element = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, selector)))
+                    wait.until(lambda d: "Spread" in element.text and any(c.isdigit() for c in element.text))
 
-                    # Soft wait: we want the spread value to appear, but some pairs
-                    # (e.g. USDT_CNGN) have an empty bid wall so digits may never
-                    # appear on both sides. If the full condition times out, we fall
-                    # through and attempt to parse whatever is already in element.text.
-                    # parse_orderbook + the curr_spread None-check below will be the
-                    # true gate on whether the data is usable.
-                    try:
-                        wait.until(lambda d: "Spread" in element.text and any(c.isdigit() for c in element.text))
-                    except Exception:
-                        # Partial load — continue and let the parser decide
-                        pass
-
-                    asks_df, bids_df, curr_spread, mid_price, ask_layers, bid_layers = parse_orderbook(element.text)
+                    asks_df, bids_df, curr_spread, ask_layers, bid_layers = parse_orderbook(element.text)
                     if curr_spread is None: raise ValueError("No spread data")
 
                     # --- Spread anomaly check ---
@@ -323,17 +310,15 @@ def main():
                     depth_25 = calculate_liquidity_depth(asks_df, bids_df, curr_spread * 1.25)
                     depth_50 = calculate_liquidity_depth(asks_df, bids_df, curr_spread * 1.5)
 
-                    # mid_price is extracted directly from the scraped orderbook text
-                    # (sits beside the spread % value), so it's always available regardless
-                    # of whether the ask or bid wall is empty.
+                    # Mid-price calculation
+                    mid_price = (asks_df['price'].min() + bids_df['price'].max()) / 2
 
                     # State Logic
                     p_state = state.get(symbol, {"consecutive": 0, "last_alert": None, "start_time": None, "last_mid_price": None})
 
                     # Mid-price check (one-shot alert, no strikes, applies to ALL pairs)
-                    # Skipped entirely if mid_price could not be computed (fully empty book)
                     last_mid_price = p_state.get("last_mid_price")
-                    if mid_price is not None and last_mid_price is not None:
+                    if last_mid_price is not None:
                         price_change_pct = ((mid_price - last_mid_price) / last_mid_price) * 100
                         if abs(price_change_pct) >= MID_PRICE_ALERT_THRESHOLD:
                             direction = "📈" if price_change_pct > 0 else "📉"
@@ -342,7 +327,7 @@ def main():
                             price_alert_msg += f"Current Mid:  {mid_price:,.6g}\n"
                             price_alert_msg += f"Change: {price_change_pct:+.2f}%"
                             send_telegram(price_alert_msg)
-                    p_state["last_mid_price"] = mid_price  # None is valid — skips next check too
+                    p_state["last_mid_price"] = mid_price
 
                     # Strike accumulation / clearing
                     if is_poor:
