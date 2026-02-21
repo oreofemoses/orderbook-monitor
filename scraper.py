@@ -176,7 +176,7 @@ def update_daily_log(all_results):
             for sym, tgt in missing_pairs:
                 row = {
                     'Market': sym,
-                    '% Spd': f"{tgt}%" if tgt is not None else "N/A",
+                    # '% Spd': f"{tgt}%" if tgt is not None else "N/A",
                 }
                 # Fill every existing STATUS/TIME column with an empty string
                 for col in existing_check_cols:
@@ -195,7 +195,7 @@ def update_daily_log(all_results):
         # % Spd shows "N/A" for monitor-only pairs
         df = pd.DataFrame({
             'Market': [pair[0] for pair in PAIRS],
-            '% Spd': [f"{pair[1]}%" if pair[1] is not None else "N/A" for pair in PAIRS]
+            # '% Spd': [f"{pair[1]}%" if pair[1] is not None else "N/A" for pair in PAIRS]
         })
 
     # Determine next check number
