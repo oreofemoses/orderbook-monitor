@@ -160,7 +160,7 @@ def style_status_cell(val):
 status_cols = [col for col in daily_log.columns if col.startswith('STATUS (CHECK')]
 
 # Reorder columns: Market, % Spd, then CHECK columns in reverse (latest first), then DEPTH
-base_cols = ['Market', '% Spd']
+base_cols = ['Market']
 check_cols = []
 for col in daily_log.columns:
     if col.startswith('STATUS (CHECK') or col.startswith('TIME (CHECK'):
