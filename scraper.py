@@ -308,7 +308,7 @@ def main():
                     # Skipped entirely for monitor-only pairs; diff is None in that case.
                     if not monitor_only:
                         diff = ((curr_spread - target) / target) * 100
-                        spread_anomaly = (diff > 100 or diff < -40)
+                        spread_anomaly = (diff > 100 or diff < -75)
                     else:
                         diff = None          # No target to compare against
                         spread_anomaly = False  # Never flag spread for monitor-only pairs
