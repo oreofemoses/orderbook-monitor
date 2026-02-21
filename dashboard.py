@@ -236,7 +236,7 @@ with st.expander("📊 View Market Details"):
             for market in warning_markets:
                 market_row = daily_log[daily_log['Market'] == market].iloc[0]
                 
-                st.markdown(f"**{market}** (Target: {market_row['% Spd']})")
+                st.markdown(f"**{market}**")
                 
                 # Show status progression across checks
                 status_progression = []
