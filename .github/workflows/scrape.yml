@@ -2,65 +2,68 @@ name: Hourly Orderbook Scraper
 
 on:
   schedule:
-    - cron: '23 * * * *'
+    - cron: '17 * * * *'
+  
+  # Allow manual trigger from GitHub Actions tab
   workflow_dispatch:
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10  # Prevent hanging forever
+    
+    # REQUIRED: Grant permission to push data back to the repository
+    permissions:
+      contents: write
+    
+    # Docker service with Chrome pre-installed
+    services:
+      chrome:
+        image: selenium/standalone-chrome:latest
+        ports:
+          - 4444:4444
+        options: --shm-size=2g
     
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v3
-      with:
-        token: ${{ secrets.GITHUB_TOKEN }}
+      uses: actions/checkout@v4
     
     - name: Set up Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5
       with:
         python-version: '3.10'
+        cache: 'pip' # speeds up subsequent runs
     
-    - name: Install system dependencies with retry
+    - name: Wait for Chrome to be ready
       run: |
-        # Clean apt locks
-        sudo rm -f /var/lib/apt/lists/lock
-        sudo rm -f /var/cache/apt/archives/lock
-        sudo rm -f /var/lib/dpkg/lock*
-        sudo dpkg --configure -a
-        
-        # Retry apt-get update
-        for i in 1 2 3; do
-          sudo apt-get update && break || sleep 15
-        done
-        
-        # Retry chromium install
-        for i in 1 2 3; do
-          sudo apt-get install -y chromium-browser chromium-chromedriver && break || sleep 15
-        done
-    
-    - name: Cache Python dependencies
-      uses: actions/cache@v3
-      with:
-        path: ~/.cache/pip
-        key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
-        restore-keys: |
-          ${{ runner.os }}-pip-
+        timeout 30 bash -c 'until curl -s http://localhost:4444/wd/hub/status > /dev/null 2>&1; do echo "Waiting for Chrome..."; sleep 2; done'
+        echo "Chrome is ready!"
     
     - name: Install Python dependencies
       run: |
         pip install --upgrade pip
-        pip install selenium pandas requests python-dotenv
+        pip install selenium pandas requests
     
     - name: Run scraper
       env:
         TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
         TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-      run: timeout 600 python scraper.py || true
+        SELENIUM_REMOTE_URL: http://localhost:4444/wd/hub
+      run: python scraper.py
     
     - name: Commit and push results
       run: |
         git config --local user.email "github-actions[bot]@users.noreply.github.com"
         git config --local user.name "github-actions[bot]"
-        git add data/ || true
-        git diff --quiet && git diff --staged --quiet || (git commit -m "📊 Update - $(date -u +'%Y-%m-%d %H:%M UTC')" && git push) || true
+        
+        # Add files in data folder
+        git add data/
+        git pull origin main --rebase --autostash
+        
+        # Check if there are changes before committing to avoid errors
+        if git diff --staged --quiet; then
+          echo "No changes to commit"
+        else
+          git commit -m "📊 Update orderbook data - $(date -u +'%Y-%m-%d %H:%M UTC')"
+          git push
+        fi
