@@ -249,19 +249,20 @@ def send_telegram(msg):
             )
 
 def init_driver():
+    """Initialize Chrome WebDriver for Alpine container."""
     chrome_options = Options()
-    chrome_options.add_argument("--headless=new")
+    chrome_options.add_argument("--headless")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--disable-gpu")
+    chrome_options.add_argument("--disable-features=VizDisplayCompositor")
     chrome_options.add_argument("--window-size=1920,1080")
-    chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-    chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
-    user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
-    chrome_options.add_argument(f"user-agent={user_agent}")
-    if os.path.exists("/usr/bin/chromium-browser"): chrome_options.binary_location = "/usr/bin/chromium-browser"
-    service = Service("/usr/bin/chromedriver")
-    try: return webdriver.Chrome(service=service, options=chrome_options)
-    except: return webdriver.Chrome(options=chrome_options)
+    
+    # Alpine container has Chrome at different location
+    chrome_options.binary_location = "/usr/bin/chromium-browser"
+    
+    driver = webdriver.Chrome(options=chrome_options)
+    return driver
 
 # --- Main Execution ---
 
