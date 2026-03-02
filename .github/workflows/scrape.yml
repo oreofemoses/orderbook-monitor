@@ -2,7 +2,8 @@ name: Hourly Orderbook Scraper
 
 on:
   schedule:
-    - cron: '17 * * * *'
+    
+    - cron: '26 * * * *'
   
   # Allow manual trigger from GitHub Actions tab
   workflow_dispatch:
@@ -10,19 +11,10 @@ on:
 jobs:
   scrape:
     runs-on: ubuntu-latest
-    timeout-minutes: 10  # Prevent hanging forever
     
     # REQUIRED: Grant permission to push data back to the repository
     permissions:
       contents: write
-    
-    # Docker service with Chrome pre-installed
-    services:
-      chrome:
-        image: selenium/standalone-chrome:latest
-        ports:
-          - 4444:4444
-        options: --shm-size=2g
     
     steps:
     - name: Checkout repository
@@ -34,10 +26,10 @@ jobs:
         python-version: '3.10'
         cache: 'pip' # speeds up subsequent runs
     
-    - name: Wait for Chrome to be ready
+    - name: Install system dependencies
       run: |
-        timeout 30 bash -c 'until curl -s http://localhost:4444/wd/hub/status > /dev/null 2>&1; do echo "Waiting for Chrome..."; sleep 2; done'
-        echo "Chrome is ready!"
+        sudo apt-get update
+        sudo apt-get install -y chromium-browser chromium-chromedriver
     
     - name: Install Python dependencies
       run: |
@@ -48,7 +40,6 @@ jobs:
       env:
         TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
         TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        SELENIUM_REMOTE_URL: http://localhost:4444/wd/hub
       run: python scraper.py
     
     - name: Commit and push results
@@ -58,6 +49,7 @@ jobs:
         
         # Add files in data folder
         git add data/
+
         git pull origin main --rebase --autostash
         
         # Check if there are changes before committing to avoid errors
