@@ -14,7 +14,7 @@ def get_nigerian_time():
 # --- Page Configuration ---
 st.set_page_config(
     page_title="Orderbook Health Monitor",
-    page_icon="📊",
+    page_icon="favicon.jpg",
     layout="wide"
 )
 
