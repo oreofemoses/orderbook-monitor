@@ -12,6 +12,28 @@ import json
 import requests
 from datetime import datetime, timedelta, timezone
 
+# --- Load Pairs Configuration (Hidden from Code) ---
+def load_pairs_config():
+    """
+    Load pairs configuration from PAIRS_CONFIG environment variable.
+    Returns list of [symbol, target_spread] pairs.
+    """
+    pairs_json = os.getenv('PAIRS_CONFIG')
+    
+    if not pairs_json:
+        print("❌ ERROR: PAIRS_CONFIG environment variable not set!")
+        print("Set this in GitHub repo Settings → Secrets → Actions")
+        exit(1)
+    
+    try:
+        print("Loading pairs from environment variable...")
+        pairs = json.loads(pairs_json)
+        print(f"✅ Loaded {len(pairs)} pairs")
+        return pairs
+    except json.JSONDecodeError as e:
+        print(f"❌ ERROR: Invalid JSON in PAIRS_CONFIG: {e}")
+        exit(1)
+
 # --- Configuration ---
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 # Support multiple chat IDs (comma-separated in environment variable)
@@ -38,26 +60,8 @@ MID_PRICE_ALERT_THRESHOLD = 25  # % change in mid-price that triggers a one-shot
 # Format: [symbol, target_spread_or_None]
 # target=None means "monitor only" — spread is logged but never triggers strikes.
 # Strikes on these pairs are driven purely by shallow orderbook depth.
-PAIRS = [
-    ['AAVE_USDT', 0.30], ['ADA_USDT', 0.26], ['ALGO_USDT', 2.00],
-    ['BCH_USDT', 0.26], ['BNB_USDT', 0.30], ['BONK_USDT', 2.00],
-    ['BTC_USDT', 0.20], ['CAKE_USDT', 0.30], ['CFX_USDT', 2.00], ['DASH_USDT', 2.00],
-    ['DOT_USDT', 0.26], ['DOGE_USDT', 0.26], ['ETH_USDT', 0.25],
-    ['FARTCOIN_USDT', 2.00], ['FLOKI_USDT', 0.50], ['HYPE_USDT', 2.00],
-    ['LINK_USDT', 0.26], ['LSK_USDT', 1.50], ['LTC_USDT', 0.30], ['NEAR_USDT', 2.00], ['NOS_USDT', 2.00],
-    ['PEPE_USDT', 0.50], ['POL_USDT', 0.50], ['QDX_USDT', None],      # No target — monitor only
-    ['RENDER_USDT', 2.00], ['Sonic_USDT', 2.00], ['SHIB_USDT', 0.40],
-    ['SLP_USDT', 2.00], ['SOL_USDT', 0.25], ['STRK_USDT', 2.00],
-    ['SUI_USDT', 2.00], ['TON_USDT', 0.30], ['TRX_USDT', 0.30],
-    ['USDC_USDT', 0.02], ['WIF_USDT', 2.00], ['XLM_USDT', 0.30],
-    ['XRP_USDT', 0.30], ['XYO_USDT', 1.00], ['ZKSync_USDT', 2.00],
-    ['USDT_CNGN', None],                                                # No target — monitor only
-    ['BTC_NGN', 0.7], ['USDT_NGN', 0.95], ['QDX_NGN', None],         # No target — monitor only
-    ['ETH_NGN', 0.75], ['TRX_NGN', 0.75], ['XRP_NGN', 0.50],
-    ['DASH_NGN', 0.50], ['LTC_NGN', 0.50], ['SOL_NGN', 0.80],
-    ['USDC_NGN', 1.20], ['CNGN_NGN', None],                            # No target — monitor only
-    ['USDT_GHS', 1.30]
-]
+# Load pairs configuration from environment variable (hidden from git)
+PAIRS = load_pairs_config()
 
 # --- Helper function to get current Nigerian time ---
 def get_nigerian_time():
@@ -258,10 +262,32 @@ def init_driver():
     chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
     user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
     chrome_options.add_argument(f"user-agent={user_agent}")
-    if os.path.exists("/usr/bin/chromium-browser"): chrome_options.binary_location = "/usr/bin/chromium-browser"
-    service = Service("/usr/bin/chromedriver")
-    try: return webdriver.Chrome(service=service, options=chrome_options)
-    except: return webdriver.Chrome(options=chrome_options)
+    
+    # Check if running with remote Selenium (GitHub Actions with Docker)
+    selenium_remote_url = os.getenv('SELENIUM_REMOTE_URL')
+    
+    if selenium_remote_url:
+        print(f"Using remote Selenium at {selenium_remote_url}")
+        try:
+            driver = webdriver.Remote(
+                command_executor=selenium_remote_url,
+                options=chrome_options
+            )
+            print(f"✓ Successfully connected to remote Chrome")
+            return driver
+        except Exception as e:
+            print(f"✗ Failed to connect to remote Chrome: {e}")
+            raise
+    else:
+        # Use local Chrome
+        print("Using local Chrome")
+        if os.path.exists("/usr/bin/chromium-browser"): 
+            chrome_options.binary_location = "/usr/bin/chromium-browser"
+        service = Service("/usr/bin/chromedriver")
+        try: 
+            return webdriver.Chrome(service=service, options=chrome_options)
+        except: 
+            return webdriver.Chrome(options=chrome_options)
 
 # --- Main Execution ---
 
