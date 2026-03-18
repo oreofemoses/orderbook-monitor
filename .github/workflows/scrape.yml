@@ -40,6 +40,7 @@ jobs:
       env:
         TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
         TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        PAIRS_CONFIG: ${{ secrets.PAIRS_CONFIG }}
       run: python scraper.py
     
     - name: Commit and push results
