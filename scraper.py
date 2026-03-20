@@ -11,6 +11,7 @@ import re
 import json
 import requests
 from datetime import datetime, timedelta, timezone
+from collections import defaultdict
 
 # --- Load Pairs Configuration (Hidden from Code) ---
 def load_pairs_config():
@@ -55,6 +56,29 @@ ALERT_COOLDOWN_MINUTES = 30
 MAX_ATTEMPTS_PER_PAIR = 3
 MIN_ORDERBOOK_LAYERS = 10      # Minimum layers required on each side
 MID_PRICE_ALERT_THRESHOLD = 25  # % change in mid-price that triggers a one-shot alert
+
+# --- Spike thresholds per quote currency ---
+THRESHOLDS = {
+    "USDT": 5_000,
+    "NGN":  5_000_000,
+    "GHS":  60_000,
+}
+
+CURRENCY_SYMBOLS = {
+    "USDT": "$",
+    "NGN":  "₦",
+    "GHS":  "₵",
+}
+
+def get_threshold(sym):
+    """Return the correct spike threshold based on the quote currency of the pair."""
+    quote = sym.split("_")[-1].upper()
+    return THRESHOLDS.get(quote, 5_000)
+
+def get_currency_symbol(sym):
+    """Return the display currency symbol for a pair's quote currency."""
+    quote = sym.split("_")[-1].upper()
+    return CURRENCY_SYMBOLS.get(quote, "$")
 
 # --- PAIRS ---
 # Format: [symbol, target_spread_or_None]
@@ -133,6 +157,87 @@ def format_depth(val):
     if val >= 1_000: return f"${val/1_000:.1f}K"
     return f"${val:.0f}"
 
+# --- Spike Detection Functions ---
+
+def get_todays_trades(raw_text, sym):
+    """
+    Parse raw trade table text and return only today's trades,
+    each enriched with a computed `value` (price × amount).
+    Returns an empty list if no trades today or parsing fails.
+    """
+    now = get_nigerian_time()
+    current_secs = now.hour * 3600 + now.minute * 60 + now.second
+
+    rows = []
+    for line in raw_text.strip().split("\n"):
+        parts = line.split()
+        if len(parts) == 3 and parts[0] not in ("Price", "--"):
+            try:
+                h, m, s = parts[2].split(":")
+                secs = int(h) * 3600 + int(m) * 60 + int(s)
+                rows.append({
+                    "pair":   sym,
+                    "price":  float(parts[0].replace(",", "")),
+                    "amount": float(parts[1]),
+                    "time":   parts[2],
+                    "secs":   secs,
+                })
+            except:
+                pass
+
+    if not rows:
+        return []
+
+    # Most recent trade is ahead of current time → no trades today yet
+    if rows[0]["secs"] > current_secs:
+        return []
+
+    # Walk down until time jumps forward (midnight crossover = yesterday's data)
+    todays = []
+    prev_secs = rows[0]["secs"]
+    for row in rows:
+        # A forward jump of >5 min means we've crossed into yesterday's data
+        if row["secs"] > prev_secs + 300:
+            break
+        todays.append({**row, "value": round(row["price"] * row["amount"], 2)})
+        prev_secs = row["secs"]
+
+    return todays
+
+
+def get_hourly_spikes(trades, sym):
+    """
+    Group trades by hour and return a list of spiked hours,
+    where the hour's cumulative value meets or exceeds the pair's threshold.
+
+    Returns a list of dicts: {hour, trade_count, total_value, currency_symbol}
+    Returns an empty list if no trades or no spikes.
+    """
+    if not trades:
+        return []
+
+    threshold = get_threshold(sym)
+    currency  = get_currency_symbol(sym)
+
+    hourly = defaultdict(list)
+    for t in trades:
+        hour = int(t["time"].split(":")[0])
+        hourly[hour].append(t)
+
+    spikes = []
+    for hour in sorted(hourly.keys()):
+        bucket    = hourly[hour]
+        total_val = sum(t["value"] for t in bucket)
+        if total_val >= threshold:
+            spikes.append({
+                "hour":         hour,
+                "trade_count":  len(bucket),
+                "total_value":  total_val,
+                "currency":     currency,
+            })
+
+    return spikes
+
 # --- Persistence & Helpers ---
 
 def load_state():
@@ -173,19 +278,14 @@ def update_daily_log(all_results):
         missing_pairs = [(sym, tgt) for sym, tgt in PAIRS if sym not in existing_markets]
 
         if missing_pairs:
-            # Build skeleton rows for the missing pairs.
-            # All previous STATUS/TIME columns get empty strings; DEPTH gets '' too.
             existing_check_cols = [c for c in df.columns if c not in ('Market', '% Spd', 'DEPTH')]
             new_rows = []
             for sym, tgt in missing_pairs:
                 row = {
                     'Market': sym,
-                    # '% Spd': f"{tgt}%" if tgt is not None else "N/A",
                 }
-                # Fill every existing STATUS/TIME column with an empty string
                 for col in existing_check_cols:
                     row[col] = ''
-                # Fill DEPTH if it exists
                 if 'DEPTH' in df.columns:
                     row['DEPTH'] = ''
                 new_rows.append(row)
@@ -195,11 +295,8 @@ def update_daily_log(all_results):
             print(f"ℹ️  Added {len(missing_pairs)} new pair(s) to today's log: {[p[0] for p in missing_pairs]}")
 
     else:
-        # Create new log with all markets
-        # % Spd shows "N/A" for monitor-only pairs
         df = pd.DataFrame({
             'Market': [pair[0] for pair in PAIRS],
-            # '% Spd': [f"{pair[1]}%" if pair[1] is not None else "N/A" for pair in PAIRS]
         })
 
     # Determine next check number
@@ -263,7 +360,6 @@ def init_driver():
     user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
     chrome_options.add_argument(f"user-agent={user_agent}")
     
-    # Check if running with remote Selenium (GitHub Actions with Docker)
     selenium_remote_url = os.getenv('SELENIUM_REMOTE_URL')
     
     if selenium_remote_url:
@@ -279,7 +375,6 @@ def init_driver():
             print(f"✗ Failed to connect to remote Chrome: {e}")
             raise
     else:
-        # Use local Chrome
         print("Using local Chrome")
         if os.path.exists("/usr/bin/chromium-browser"): 
             chrome_options.binary_location = "/usr/bin/chromium-browser"
@@ -296,14 +391,14 @@ def main():
     state = load_state()
     driver = init_driver()
     final_results = []
+    # Accumulates spike data across all pairs for the end-of-run summary
+    spike_summary = []  # list of {symbol, spikes: [{hour, trade_count, total_value, currency}]}
 
     send_telegram(f"🔄 <b>Starting Hourly Check</b>\nPairs: {len(PAIRS)}")
 
     try:
         for symbol, target in PAIRS:
-            # Determine if this pair is "monitor only" (no spread target)
             monitor_only = (target is None)
-
             attempt = 0
             success = False
 
@@ -312,39 +407,31 @@ def main():
                 try:
                     driver.get(f"{BASE_URL}{symbol}")
                     wait = WebDriverWait(driver, 15)
-                    selector = ".newTrade-depth-block.depath-index-container"
-                    element = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, selector)))
 
-                    # Soft wait: we want the spread value to appear, but some pairs
-                    # (e.g. USDT_CNGN) have an empty bid wall so digits may never
-                    # appear on both sides. If the full condition times out, we fall
-                    # through and attempt to parse whatever is already in element.text.
-                    # parse_orderbook + the curr_spread None-check below will be the
-                    # true gate on whether the data is usable.
+                    # ── Orderbook ────────────────────────────────────────────
+                    ob_selector = ".newTrade-depth-block.depath-index-container"
+                    ob_element = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, ob_selector)))
+
                     try:
-                        wait.until(lambda d: "Spread" in element.text and any(c.isdigit() for c in element.text))
+                        wait.until(lambda d: "Spread" in ob_element.text and any(c.isdigit() for c in ob_element.text))
                     except Exception:
-                        # Partial load — continue and let the parser decide
                         pass
 
-                    asks_df, bids_df, curr_spread, mid_price, ask_layers, bid_layers = parse_orderbook(element.text)
+                    asks_df, bids_df, curr_spread, mid_price, ask_layers, bid_layers = parse_orderbook(ob_element.text)
                     if curr_spread is None: raise ValueError("No spread data")
 
                     # --- Spread anomaly check ---
-                    # Skipped entirely for monitor-only pairs; diff is None in that case.
                     if not monitor_only:
                         diff = ((curr_spread - target) / target) * 100
                         spread_anomaly = (diff > 100 or diff < -75)
                     else:
-                        diff = None          # No target to compare against
-                        spread_anomaly = False  # Never flag spread for monitor-only pairs
+                        diff = None
+                        spread_anomaly = False
 
-                    # --- Shallow orderbook check (always active) ---
+                    # --- Shallow orderbook check ---
                     shallow_orderbook = (ask_layers < MIN_ORDERBOOK_LAYERS or bid_layers < MIN_ORDERBOOK_LAYERS)
 
                     # --- Combined is_poor flag ---
-                    # Monitor-only pairs: purely driven by orderbook depth
-                    # Normal pairs: either spread anomaly OR shallow orderbook
                     is_poor = spread_anomaly or shallow_orderbook
 
                     # Calculations
@@ -352,15 +439,10 @@ def main():
                     depth_25 = calculate_liquidity_depth(asks_df, bids_df, curr_spread * 1.25)
                     depth_50 = calculate_liquidity_depth(asks_df, bids_df, curr_spread * 1.5)
 
-                    # mid_price is extracted directly from the scraped orderbook text
-                    # (sits beside the spread % value), so it's always available regardless
-                    # of whether the ask or bid wall is empty.
-
                     # State Logic
                     p_state = state.get(symbol, {"consecutive": 0, "last_alert": None, "start_time": None, "last_mid_price": None})
 
-                    # Mid-price check (one-shot alert, no strikes, applies to ALL pairs)
-                    # Skipped entirely if mid_price could not be computed (fully empty book)
+                    # Mid-price check
                     last_mid_price = p_state.get("last_mid_price")
                     if mid_price is not None and last_mid_price is not None:
                         price_change_pct = ((mid_price - last_mid_price) / last_mid_price) * 100
@@ -371,7 +453,7 @@ def main():
                             price_alert_msg += f"Current Mid:  {mid_price:,.6g}\n"
                             price_alert_msg += f"Change: {price_change_pct:+.2f}%"
                             send_telegram(price_alert_msg)
-                    p_state["last_mid_price"] = mid_price  # None is valid — skips next check too
+                    p_state["last_mid_price"] = mid_price
 
                     # Strike accumulation / clearing
                     if is_poor:
@@ -398,32 +480,44 @@ def main():
 
                         if cooldown_ok:
                             alert_msg = f"⚠️ <b>ALERT: {symbol}</b>\n"
-
-                            # Only show spread fields if a target exists
                             if not monitor_only:
                                 alert_msg += f"Spread: {curr_spread}% (Target: {target}%)\n"
                                 alert_msg += f"Diff: {diff:+.2f}%\n"
                             else:
                                 alert_msg += f"Spread: {curr_spread}% (No target — monitor only)\n"
-
                             alert_msg += f"Ask Layers: {ask_layers}\n"
                             alert_msg += f"Bid Layers: {bid_layers}\n"
                             alert_msg += f"Strikes: {p_state['consecutive']}\n"
                             alert_msg += f"Depth @ 1.25x: {format_depth(depth_25)}\n"
                             alert_msg += f"Depth @ 1.5x: {format_depth(depth_50)}"
-
-                            # Anomaly indicator
                             if spread_anomaly and shallow_orderbook:
                                 alert_msg += f"\n🚨 BOTH spread & orderbook issues"
                             elif spread_anomaly:
                                 alert_msg += f"\n📊 Spread anomaly detected"
                             elif shallow_orderbook:
                                 alert_msg += f"\n📉 Shallow orderbook detected"
-                            # Monitor-only pairs can only reach here via shallow_orderbook,
-                            # so no extra label needed beyond the one above.
-
                             send_telegram(alert_msg)
                             p_state["last_alert"] = get_nigerian_time().isoformat()
+
+                    # ── Spike detection (same page, different element) ───────
+                    try:
+                        trade_selector = ".currentTrade.currentTrade-index-container"
+                        trade_element = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, trade_selector)))
+                        # Wait until the trade table has populated with real data
+                        wait.until(lambda d: "Price" in trade_element.text and any(c.isdigit() for c in trade_element.text))
+                        time.sleep(0.5)
+
+                        trades = get_todays_trades(trade_element.text, symbol)
+                        spikes = get_hourly_spikes(trades, symbol)
+
+                        if spikes:
+                            spike_summary.append({"symbol": symbol, "spikes": spikes})
+                            print(f"[{symbol}] 🚨 {len(spikes)} spiked hour(s) detected")
+                        else:
+                            print(f"[{symbol}] ✅ No trade spikes")
+
+                    except Exception as spike_err:
+                        print(f"[{symbol}] Spike check skipped: {spike_err}")
 
                     final_results.append({
                         'timestamp': get_nigerian_time().strftime('%Y-%m-%d %H:%M:%S'),
@@ -432,7 +526,6 @@ def main():
                         'status': 'Warning' if is_poor else 'Checked',
                         'strikes': p_state["consecutive"],
                         'current_spread': curr_spread,
-                        # Show target as "N/A" string in the log for monitor-only pairs
                         'target_spread': target if not monitor_only else 'N/A',
                         'percent_diff': round(diff, 2) if diff is not None else 'N/A',
                         'ask_layers': ask_layers,
@@ -458,7 +551,26 @@ def main():
 
         save_state(state)
 
-        # Build detailed completion message
+        # ── Spike summary Telegram message ───────────────────────────────────
+        if spike_summary:
+            spike_msg = f"🚨 <b>Trade Spike Summary</b>\n"
+            spike_msg += f"<i>{get_nigerian_time().strftime('%Y-%m-%d %H:%M:%S')} (NGN)</i>\n"
+            spike_msg += f"{'─' * 30}\n"
+            for entry in spike_summary:
+                sym = entry["symbol"]
+                spike_msg += f"\n<b>{sym}</b>\n"
+                for s in entry["spikes"]:
+                    spike_msg += (
+                        f"  {s['hour']:02d}:00 — "
+                        f"{s['trade_count']} trade(s) — "
+                        f"{s['currency']}{s['total_value']:,.2f}\n"
+                    )
+            spike_msg += f"\n{len(spike_summary)} pair(s) flagged"
+            send_telegram(spike_msg)
+        else:
+            send_telegram("✅ <b>No trade spikes detected this check.</b>")
+
+        # ── Completion message ───────────────────────────────────────────────
         warnings = [r for r in final_results if r['status'] == 'Warning']
         total_pairs = len(final_results)
 
@@ -470,7 +582,6 @@ def main():
             completion_msg += f"\n<b>⚠️ Markets with Warnings:</b>\n"
             for w in warnings:
                 completion_msg += f"\n<b>{w['symbol']}</b>"
-                # Only show spread diff line if target exists
                 if not w['monitor_only']:
                     completion_msg += f"\n  Spread: {w['current_spread']}% (Target: {w['target_spread']}%)"
                     completion_msg += f"\n  Diff: {w['percent_diff']:+.2f}%"
