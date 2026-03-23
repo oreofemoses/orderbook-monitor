@@ -57,23 +57,37 @@ MAX_ATTEMPTS_PER_PAIR = 3
 MIN_ORDERBOOK_LAYERS = 10      # Minimum layers required on each side
 MID_PRICE_ALERT_THRESHOLD = 25  # % change in mid-price that triggers a one-shot alert
 
-# --- Spike thresholds per quote currency ---
-THRESHOLDS = {
-    "USDT": 5_000,
-    "NGN":  5_000_000,
-    "GHS":  60_000,
-}
-
 CURRENCY_SYMBOLS = {
     "USDT": "$",
     "NGN":  "₦",
     "GHS":  "₵",
 }
 
+# ── High-volume tokens with elevated spike thresholds ─────────────────────
+# USDT pairs: $50,000  |  NGN pairs: ₦50,000,000
+# Add or remove symbols here to update which tokens use the elevated threshold.
+HIGH_VOL_TOKENS = {
+    'BTC',
+    'ETH',
+    'SOL',
+}
+
 def get_threshold(sym):
-    """Return the correct spike threshold based on the quote currency of the pair."""
-    quote = sym.split("_")[-1].upper()
-    return THRESHOLDS.get(quote, 5_000)
+    """Return (threshold, currency_symbol, denomination_label)."""
+    base = sym.split('_')[0].upper()  # e.g. 'BTC' from 'BTC_USDT' or 'BTC_NGN'
+
+    if sym == 'USDT_NGN':
+        return 50_000_000
+    if sym.endswith('_NGN'):
+        threshold = 50_000_000 if base in HIGH_VOL_TOKENS else 5_000_000
+        return threshold
+    if sym.endswith('_GHS') or sym == 'USDT_GHS':
+        return 60_000
+    if sym == 'CNGN_USDT':
+        return None, '$', 'CNGN'   # sentinel — handled specially in detect_spikes
+    # Default USDT pairs
+    threshold = 50_000 if base in HIGH_VOL_TOKENS else 5_000
+    return threshold
 
 def get_currency_symbol(sym):
     """Return the display currency symbol for a pair's quote currency."""
