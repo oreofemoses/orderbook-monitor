@@ -174,46 +174,57 @@ def format_depth(val):
 # --- Spike Detection Functions ---
 
 def get_todays_trades(raw_text, sym):
-    """
-    Parse raw trade table text and return only today's trades,
-    each enriched with a computed `value` (price × amount).
-    Returns an empty list if no trades today or parsing fails.
-    """
-    now = get_nigerian_time()
+    now = datetime.now()
     current_secs = now.hour * 3600 + now.minute * 60 + now.second
 
     rows = []
+
+    # ── Parse rows ─────────────────────────────────────────
     for line in raw_text.strip().split("\n"):
         parts = line.split()
+
         if len(parts) == 3 and parts[0] not in ("Price", "--"):
             try:
+                # Fix weird price format like 0.0{5}6138
+                price_str = parts[0].replace(",", "")
+                if "{5}" in price_str:
+                    price_str = price_str.replace("{5}", "00000")
+
                 h, m, s = parts[2].split(":")
                 secs = int(h) * 3600 + int(m) * 60 + int(s)
+
                 rows.append({
-                    "pair":   sym,
-                    "price":  float(parts[0].replace(",", "")),
-                    "amount": float(parts[1]),
-                    "time":   parts[2],
-                    "secs":   secs,
+                    "pair": sym,
+                    "price": float(price_str),
+                    "amount": float(parts[1].replace(",", "")),
+                    "time": parts[2],
+                    "secs": secs,
                 })
             except:
-                pass
+                continue
 
     if not rows:
+        print(f"[{sym}] No rows parsed")
         return []
 
-    # Most recent trade is ahead of current time → no trades today yet
-    if rows[0]["secs"] > current_secs:
+    newest = rows[0]["secs"]
+
+    # ── Case B: No trades today ─────────────────────────────
+    if newest > current_secs:
+        print(f"[{sym}] No trades today (latest {rows[0]['time']} > now)")
         return []
 
-    # Walk down until time jumps forward (midnight crossover = yesterday's data)
+    # ── Case A: Extract today's trades ──────────────────────
     todays = []
-    prev_secs = rows[0]["secs"]
+    prev_secs = newest
+
     for row in rows:
-        # A forward jump of >5 min means we've crossed into yesterday's data
-        if row["secs"] > prev_secs + 300:
+        # Midnight crossover detection (STRICT)
+        if row["secs"] > prev_secs:
             break
-        todays.append({**row, "value": round(row["price"] * row["amount"], 2)})
+
+        value = round(row["price"] * row["amount"], 2)
+        todays.append({**row, "value": value})
         prev_secs = row["secs"]
 
     return todays
