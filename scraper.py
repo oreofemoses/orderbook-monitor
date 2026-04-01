@@ -70,6 +70,7 @@ HIGH_VOL_TOKENS = {
     'BTC',
     'ETH',
     'SOL',
+    'USDC',
 }
 
 def get_threshold(sym):
@@ -86,7 +87,7 @@ def get_threshold(sym):
     if sym == 'CNGN_USDT':
         return None, '$', 'CNGN'   # sentinel — handled specially in detect_spikes
     # Default USDT pairs
-    threshold = 50_000 if base in HIGH_VOL_TOKENS else 5_000
+    threshold = 100_000 if base in HIGH_VOL_TOKENS else 5_000
     return threshold
 
 def get_currency_symbol(sym):
