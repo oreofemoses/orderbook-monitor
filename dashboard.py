@@ -191,7 +191,7 @@ if 'DEPTH' in daily_log.columns:
 daily_log_display = daily_log[ordered_cols]
 
 # Apply styling
-styled_df = daily_log_display.style.applymap(
+styled_df = daily_log_display.style.map(
     style_status_cell,
     subset=status_cols
 )
