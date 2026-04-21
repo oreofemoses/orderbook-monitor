@@ -257,54 +257,6 @@ if issues_display_cols:
 
 st.dataframe(styled, use_container_width=True, hide_index=True, height=600)
 
-# ── Latest snapshot table (from latest.csv) ──────────────────────────────────
-
-if latest_df is not None and not latest_df.empty:
-    st.markdown("---")
-    st.subheader("🔬 Latest Run Snapshot")
-    st.caption("Detailed metrics from the most recent scraper run.")
-
-    # Columns to show and their display labels
-    snapshot_cols = {
-        'symbol':          'Market',
-        'status':          'Status',
-        'issues':          'Issues',
-        'current_spread':  'Spread %',
-        'ask_layers':      'Ask Layers',
-        'bid_layers':      'Bid Layers',
-        'depth_1.25x':     'Depth 1.25×',
-        'depth_1.5x':      'Depth 1.5×',
-        'imbalance_ratio': 'Imbalance',
-        'heavier_side':    'Heavy Side',
-        'dws':             'DWS',
-        'stale_ob_count':  'Stale OB',
-    }
-    available_snap_cols = [c for c in snapshot_cols if c in latest_df.columns]
-    snap = latest_df[available_snap_cols].copy()
-    snap.rename(columns={c: snapshot_cols[c] for c in available_snap_cols}, inplace=True)
-
-    def style_snap_status(val):
-        v = str(val).upper()
-        if v == 'WARNING':
-            return 'background-color: rgba(255, 50, 50, 0.25); font-weight: bold'
-        elif v == 'CHECKED':
-            return 'background-color: rgba(50, 205, 50, 0.20)'
-        return ''
-
-    def style_snap_issues(val):
-        ws = worst_severity(val)
-        if ws == 'CRITICAL': return 'background-color: rgba(255, 0, 0, 0.18)'
-        if ws == 'HIGH':     return 'background-color: rgba(255, 136, 0, 0.18)'
-        if ws == 'MEDIUM':   return 'background-color: rgba(240, 180, 0, 0.15)'
-        return ''
-
-    snap_styled = snap.style
-    if 'Status' in snap.columns:
-        snap_styled = snap_styled.map(style_snap_status, subset=['Status'])
-    if 'Issues' in snap.columns:
-        snap_styled = snap_styled.map(style_snap_issues, subset=['Issues'])
-
-    st.dataframe(snap_styled, use_container_width=True, hide_index=True, height=500)
 
 # ── Download ─────────────────────────────────────────────────────────────────
 
@@ -319,15 +271,7 @@ with col_a:
         mime="text/csv",
         use_container_width=True
     )
-with col_b:
-    if latest_df is not None:
-        st.download_button(
-            label="📥 Download Latest Snapshot",
-            data=latest_df.to_csv(index=False),
-            file_name="latest_snapshot.csv",
-            mime="text/csv",
-            use_container_width=True
-        )
+
 
 # ── Market details expander ───────────────────────────────────────────────────
 
