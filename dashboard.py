@@ -270,8 +270,6 @@ if latest_df is not None and not latest_df.empty:
         'status':          'Status',
         'issues':          'Issues',
         'current_spread':  'Spread %',
-        'target_spread':   'Target %',
-        'percent_diff':    'Diff %',
         'ask_layers':      'Ask Layers',
         'bid_layers':      'Bid Layers',
         'depth_1.25x':     'Depth 1.25×',
@@ -392,8 +390,7 @@ with st.expander("📊 Market Details — All Pairs"):
                 snap = snap_row.iloc[0]
                 c1, c2, c3, c4, c5 = st.columns(5)
                 with c1:
-                    st.metric("Spread", f"{snap.get('current_spread', 'N/A')}%",
-                              delta=f"target {snap.get('target_spread', 'N/A')}%" if snap.get('target_spread') not in ('N/A', None) else None)
+                    st.metric("Spread", f"{snap.get('current_spread', 'N/A')}%")
                 with c2:
                     st.metric("Depth 1.25×", snap.get('depth_1.25x', 'N/A'))
                 with c3:
