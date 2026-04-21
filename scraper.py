@@ -47,6 +47,17 @@ MAX_ATTEMPTS_PER_PAIR = 3
 MIN_ORDERBOOK_LAYERS = 10
 MID_PRICE_ALERT_THRESHOLD = 25
 
+# ── New alert thresholds ─────────────────────────────────────────────────────
+# A4 — Thin mid-market: minimum total depth (bid+ask) within the spread band.
+# Expressed in quote-currency units. Adjust per your typical pair sizes.
+THIN_DEPTH_THRESHOLD = 5_000        # $5,000 equivalent — raise for high-vol pairs
+
+# A5 — Depth imbalance: alert when one side is this many times larger than the other.
+DEPTH_IMBALANCE_RATIO = 5.0         # e.g. bid depth is 5× ask depth (or vice versa)
+
+# Stale orderbook: fire if top-of-book is byte-identical for this many consecutive checks.
+STALE_OB_CYCLES = 3
+
 # ── Parallelism ──────────────────────────────────────────────────────────────
 # Safe ceiling for GitHub Actions (2-core runner, ~7GB RAM).
 # Each Chrome instance uses ~300–400MB. 5 workers ≈ 2GB peak — well within limits.
@@ -151,6 +162,43 @@ def calculate_dws(asks_df, bids_df, num_levels=10):
     num = (a_sub['amount'] * (a_sub['price'] - mid)).abs().sum() + (b_sub['amount'] * (mid - b_sub['price'])).abs().sum()
     den = a_sub['amount'].sum() + b_sub['amount'].sum()
     return (num / den) / mid * 100 if den > 0 else 0
+
+def calculate_depth_imbalance(asks_df, bids_df, spread_pct_range):
+    """
+    Returns (imbalance_ratio, heavier_side) within the spread band.
+    ratio = heavier_side_depth / lighter_side_depth.
+    Returns (1.0, 'balanced') when both sides are zero or equal.
+    """
+    if asks_df.empty or bids_df.empty:
+        return None, None
+    mid   = (asks_df['price'].min() + bids_df['price'].max()) / 2
+    upper = mid * (1 + spread_pct_range / 100)
+    lower = mid * (1 - spread_pct_range / 100)
+    bid_d = (bids_df[bids_df['price'] >= lower]['price'] * bids_df[bids_df['price'] >= lower]['amount']).sum()
+    ask_d = (asks_df[asks_df['price'] <= upper]['price'] * asks_df[asks_df['price'] <= upper]['amount']).sum()
+    if ask_d == 0 and bid_d == 0:
+        return 1.0, 'balanced'
+    lighter = min(bid_d, ask_d)
+    heavier = max(bid_d, ask_d)
+    if lighter == 0:
+        return float('inf'), 'bids' if bid_d > ask_d else 'asks'
+    return heavier / lighter, ('bids' if bid_d > ask_d else 'asks')
+
+def get_top_of_book_snapshot(asks_df, bids_df):
+    """
+    Returns a compact dict of the top-of-book state for stale detection.
+    Stored in state.json and compared on each run.
+    """
+    if asks_df.empty or bids_df.empty:
+        return None
+    best_ask = asks_df.nsmallest(1, 'price').iloc[0]
+    best_bid = bids_df.nlargest(1, 'price').iloc[0]
+    return {
+        'ba_p': round(float(best_ask['price']),  8),
+        'ba_a': round(float(best_ask['amount']), 8),
+        'bb_p': round(float(best_bid['price']),  8),
+        'bb_a': round(float(best_bid['amount']), 8),
+    }
 
 def format_depth(val):
     if not val: return "$0"
@@ -370,7 +418,14 @@ def scrape_pair(symbol, target, shared_state):
                 if curr_spread is None:
                     raise ValueError("No spread data")
 
-                # ── Spread anomaly check ───────────────────────────────────
+                # ── Calculations ───────────────────────────────────────────
+                dws      = calculate_dws(asks_df, bids_df)
+                depth_25 = calculate_liquidity_depth(asks_df, bids_df, curr_spread * 1.25)
+                depth_50 = calculate_liquidity_depth(asks_df, bids_df, curr_spread * 1.5)
+                imbalance_ratio, heavier_side = calculate_depth_imbalance(asks_df, bids_df, curr_spread * 1.25)
+                ob_snapshot = get_top_of_book_snapshot(asks_df, bids_df)
+
+                # ── Spread anomaly check (A2) ──────────────────────────────
                 if not monitor_only:
                     diff = ((curr_spread - target) / target) * 100
                     spread_anomaly = (diff > 100 or diff < -75)
@@ -378,21 +433,56 @@ def scrape_pair(symbol, target, shared_state):
                     diff = None
                     spread_anomaly = False
 
-                shallow_orderbook = (ask_layers < MIN_ORDERBOOK_LAYERS or bid_layers < MIN_ORDERBOOK_LAYERS)
-                is_poor = spread_anomaly or shallow_orderbook
+                # ── Structured issue detection ─────────────────────────────
+                # Each entry: (alert_id, severity, label)
+                # CRITICAL issues fire immediately (no strike accumulation).
+                # HIGH/MEDIUM issues feed into the strike counter.
+                issues = []
 
-                # ── Calculations ───────────────────────────────────────────
-                dws      = calculate_dws(asks_df, bids_df)
-                depth_25 = calculate_liquidity_depth(asks_df, bids_df, curr_spread * 1.25)
-                depth_50 = calculate_liquidity_depth(asks_df, bids_df, curr_spread * 1.5)
+                # A1 — Crossed orderbook (CRITICAL, fire immediately)
+                if not asks_df.empty and not bids_df.empty:
+                    best_ask = asks_df['price'].min()
+                    best_bid = bids_df['price'].max()
+                    if best_bid >= best_ask:
+                        issues.append(('A1', 'CRITICAL', f'Crossed orderbook — best bid {best_bid:,.6g} ≥ best ask {best_ask:,.6g}'))
+
+                # A3 — One-sided market (CRITICAL, fire immediately)
+                if asks_df.empty:
+                    issues.append(('A3', 'CRITICAL', 'One-sided market — no ask orders'))
+                elif bids_df.empty:
+                    issues.append(('A3', 'CRITICAL', 'One-sided market — no bid orders'))
+
+                # A2 — Spread widening (HIGH, strike-accumulating)
+                if spread_anomaly:
+                    issues.append(('A2', 'HIGH', f'Spread {curr_spread}% vs target {target}% (diff {diff:+.1f}%)'))
+
+                # Shallow orderbook — existing check, now named (HIGH)
+                if ask_layers < MIN_ORDERBOOK_LAYERS or bid_layers < MIN_ORDERBOOK_LAYERS:
+                    issues.append(('A2', 'HIGH', f'Shallow orderbook — asks:{ask_layers} bids:{bid_layers} (min {MIN_ORDERBOOK_LAYERS})'))
+
+                # A4 — Thin mid-market (MEDIUM, strike-accumulating)
+                if depth_25 < THIN_DEPTH_THRESHOLD and depth_25 > 0:
+                    issues.append(('A4', 'MEDIUM', f'Thin mid-market — depth within spread: {format_depth(depth_25)} (min {format_depth(THIN_DEPTH_THRESHOLD)})'))
+
+                # A5 — Depth imbalance (MEDIUM, strike-accumulating)
+                if imbalance_ratio is not None and imbalance_ratio != float('inf') and imbalance_ratio >= DEPTH_IMBALANCE_RATIO:
+                    issues.append(('A5', 'MEDIUM', f'Depth imbalance {imbalance_ratio:.1f}× — {heavier_side} side heavier'))
+                elif imbalance_ratio == float('inf'):
+                    issues.append(('A5', 'HIGH', f'Depth imbalance — one side is empty within spread band ({heavier_side} dominates)'))
+
+                critical_issues = [i for i in issues if i[1] == 'CRITICAL']
+                strike_issues   = [i for i in issues if i[1] in ('HIGH', 'MEDIUM')]
+                is_poor         = bool(issues)
 
                 # ── Thread-safe state read/write ───────────────────────────
                 with _state_lock:
                     p_state = shared_state.get(symbol, {
-                        "consecutive": 0,
-                        "last_alert":  None,
-                        "start_time":  None,
-                        "last_mid_price": None,
+                        "consecutive":      0,
+                        "last_alert":       None,
+                        "start_time":       None,
+                        "last_mid_price":   None,
+                        "last_ob_snapshot": None,
+                        "stale_ob_count":   0,
                     })
 
                     # Mid-price change alert
@@ -409,19 +499,46 @@ def scrape_pair(symbol, target, shared_state):
                             )
                     p_state["last_mid_price"] = mid_price
 
-                    # Strike accumulation / clearing
-                    if is_poor:
+                    # Stale orderbook detection
+                    last_snap = p_state.get("last_ob_snapshot")
+                    if ob_snapshot is not None and ob_snapshot == last_snap:
+                        p_state["stale_ob_count"] = p_state.get("stale_ob_count", 0) + 1
+                    else:
+                        p_state["stale_ob_count"] = 0
+                    p_state["last_ob_snapshot"] = ob_snapshot
+
+                    if p_state["stale_ob_count"] >= STALE_OB_CYCLES:
+                        send_telegram(
+                            f"🧊 <b>STALE ORDERBOOK: {symbol}</b>\n"
+                            f"Top-of-book unchanged for {p_state['stale_ob_count']} consecutive checks.\n"
+                            f"Best ask: {ob_snapshot['ba_p']:,.6g} × {ob_snapshot['ba_a']}\n"
+                            f"Best bid: {ob_snapshot['bb_p']:,.6g} × {ob_snapshot['bb_a']}"
+                        )
+                        p_state["stale_ob_count"] = 0   # reset after firing
+
+                    # Strike accumulation / clearing (strike-worthy issues only)
+                    if strike_issues:
                         p_state["consecutive"] += 1
                         if not p_state["start_time"]:
                             p_state["start_time"] = get_nigerian_time().isoformat()
                     else:
                         p_state["consecutive"] = 0
                         p_state["start_time"]  = None
-                        p_state["last_alert"]  = None
+                        if not critical_issues:
+                            p_state["last_alert"] = None
 
                     shared_state[symbol] = p_state
 
-                # ── Alert logic ────────────────────────────────────────────
+                # ── CRITICAL alerts — fire immediately, no strike threshold ─
+                for _, _, label in critical_issues:
+                    send_telegram(
+                        f"🚨 <b>CRITICAL: {symbol}</b>\n"
+                        f"{label}\n"
+                        f"Ask layers: {ask_layers} | Bid layers: {bid_layers}\n"
+                        f"Spread: {curr_spread}%"
+                    )
+
+                # ── Strike-based alert (HIGH/MEDIUM issues) ────────────────
                 if p_state["consecutive"] >= ALERT_THRESHOLD_CYCLES:
                     last_alert  = p_state.get("last_alert")
                     cooldown_ok = True
@@ -436,20 +553,14 @@ def scrape_pair(symbol, target, shared_state):
                         alert_msg = f"⚠️ <b>ALERT: {symbol}</b>\n"
                         if not monitor_only:
                             alert_msg += f"Spread: {curr_spread}% (Target: {target}%)\n"
-                            alert_msg += f"Diff: {diff:+.2f}%\n"
                         else:
                             alert_msg += f"Spread: {curr_spread}% (Monitor only)\n"
-                        alert_msg += f"Ask Layers: {ask_layers}\n"
-                        alert_msg += f"Bid Layers: {bid_layers}\n"
+                        alert_msg += f"Ask Layers: {ask_layers} | Bid Layers: {bid_layers}\n"
                         alert_msg += f"Strikes: {p_state['consecutive']}\n"
-                        alert_msg += f"Depth @ 1.25x: {format_depth(depth_25)}\n"
-                        alert_msg += f"Depth @ 1.5x: {format_depth(depth_50)}"
-                        if spread_anomaly and shallow_orderbook:
-                            alert_msg += "\n🚨 BOTH spread & orderbook issues"
-                        elif spread_anomaly:
-                            alert_msg += "\n📊 Spread anomaly detected"
-                        elif shallow_orderbook:
-                            alert_msg += "\n📉 Shallow orderbook detected"
+                        alert_msg += f"Depth @ 1.25x: {format_depth(depth_25)} | 1.5x: {format_depth(depth_50)}\n"
+                        alert_msg += "\n<b>Issues detected:</b>\n"
+                        for alert_id, severity, label in strike_issues:
+                            alert_msg += f"  [{alert_id}] {label}\n"
                         send_telegram(alert_msg)
                         with _state_lock:
                             shared_state[symbol]["last_alert"] = get_nigerian_time().isoformat()
@@ -474,20 +585,24 @@ def scrape_pair(symbol, target, shared_state):
 
                 # ── Build result ───────────────────────────────────────────
                 result = {
-                    'timestamp':      get_nigerian_time().strftime('%Y-%m-%d %H:%M:%S'),
-                    'symbol':         symbol,
-                    'monitor_only':   monitor_only,
-                    'status':         'Warning' if is_poor else 'Checked',
-                    'strikes':        p_state["consecutive"],
-                    'current_spread': curr_spread,
-                    'target_spread':  target if not monitor_only else 'N/A',
-                    'percent_diff':   round(diff, 2) if diff is not None else 'N/A',
-                    'ask_layers':     ask_layers,
-                    'bid_layers':     bid_layers,
-                    'dws':            round(dws, 4),
-                    'depth_1.25x':    format_depth(depth_25),
-                    'depth_1.5x':     format_depth(depth_50),
-                    '_spikes':        pair_spikes,   # internal — stripped before CSV
+                    'timestamp':        get_nigerian_time().strftime('%Y-%m-%d %H:%M:%S'),
+                    'symbol':           symbol,
+                    'monitor_only':     monitor_only,
+                    'status':           'Warning' if is_poor else 'Checked',
+                    'issues':           '|'.join(f"{i[0]}:{i[1]}" for i in issues) if issues else '',
+                    'strikes':          p_state["consecutive"],
+                    'current_spread':   curr_spread,
+                    'target_spread':    target if not monitor_only else 'N/A',
+                    'percent_diff':     round(diff, 2) if diff is not None else 'N/A',
+                    'ask_layers':       ask_layers,
+                    'bid_layers':       bid_layers,
+                    'dws':              round(dws, 4),
+                    'depth_1.25x':      format_depth(depth_25),
+                    'depth_1.5x':       format_depth(depth_50),
+                    'imbalance_ratio':  round(imbalance_ratio, 2) if imbalance_ratio and imbalance_ratio != float('inf') else ('inf' if imbalance_ratio == float('inf') else ''),
+                    'heavier_side':     heavier_side or '',
+                    'stale_ob_count':   p_state.get("stale_ob_count", 0),
+                    '_spikes':          pair_spikes,   # internal — stripped before CSV
                 }
                 print(f"[{symbol}] ✓ done (attempt {attempt})")
                 return result
