@@ -515,17 +515,14 @@ def scrape_pair(symbol, target, shared_state):
                         p_state["stale_ob_count"] = 0
                     p_state["last_ob_snapshot"] = ob_snapshot
 
-                    if p_state["stale_ob_count"] >= STALE_OB_CYCLES:
-                        send_telegram(
-                            f"🧊 <b>STALE ORDERBOOK: {symbol}</b>\n"
-                            f"Top-of-book unchanged for {p_state['stale_ob_count']} consecutive checks.\n"
-                            f"Best ask: {ob_snapshot['ba_p']:,.6g} × {ob_snapshot['ba_a']}\n"
-                            f"Best bid: {ob_snapshot['bb_p']:,.6g} × {ob_snapshot['bb_a']}"
-                        )
-                        p_state["stale_ob_count"] = 0   # reset after firing
+                    # Set flag so stale issue can be appended after lock exits
+                    stale_triggered = (p_state["stale_ob_count"] >= STALE_OB_CYCLES)
+                    if stale_triggered:
+                        p_state["stale_ob_count"] = 0   # reset after flagging
 
                     # Strike accumulation / clearing — HIGH/CRITICAL only.
-                    # MEDIUM issues (A4) are informational and do not accumulate strikes.
+                    # Stale OB and other MEDIUM issues do not accumulate strikes here;
+                    # stale_triggered is re-evaluated below after issues is updated.
                     if actionable:
                         p_state["consecutive"] += 1
                         if not p_state["start_time"]:
@@ -537,6 +534,20 @@ def scrape_pair(symbol, target, shared_state):
                             p_state["last_alert"] = None
 
                     shared_state[symbol] = p_state
+
+                # ── Stale orderbook — append to issues after lock, recompute severity ──
+                if stale_triggered and ob_snapshot:
+                    issues.append((
+                        'STALE', 'HIGH',
+                        f'Stale orderbook — top-of-book unchanged for '
+                        f'{STALE_OB_CYCLES} consecutive checks '
+                        f'(ask {ob_snapshot["ba_p"]:,.6g} × {ob_snapshot["ba_a"]}, '
+                        f'bid {ob_snapshot["bb_p"]:,.6g} × {ob_snapshot["bb_a"]})'
+                    ))
+                    # Recompute derived lists now that issues has grown
+                    critical_issues = [i for i in issues if i[1] == 'CRITICAL']
+                    actionable      = [i for i in issues if i[1] in ('CRITICAL', 'HIGH')]
+                    is_poor         = bool(actionable)
 
                 # ── CRITICAL alerts — fire immediately, no strike threshold ─
                 for _, _, label in critical_issues:
