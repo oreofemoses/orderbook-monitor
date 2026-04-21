@@ -307,9 +307,10 @@ def update_daily_log(all_results):
         df = pd.DataFrame({'Market': [pair[0] for pair in PAIRS]})
 
     status_cols = [col for col in df.columns if col.startswith('STATUS (CHECK')]
-    check_num = len(status_cols) + 1
+    check_num  = len(status_cols) + 1
     status_col = f'STATUS (CHECK {check_num})'
     time_col   = f'TIME (CHECK {check_num})'
+    issues_col = f'ISSUES (CHECK {check_num})'
     results_map = {r['symbol']: r for r in all_results}
 
     df[status_col] = df['Market'].apply(
@@ -317,6 +318,9 @@ def update_daily_log(all_results):
     )
     df[time_col] = df['Market'].apply(
         lambda m: current_time if m in results_map else ''
+    )
+    df[issues_col] = df['Market'].apply(
+        lambda m: results_map[m].get('issues', '') if m in results_map else ''
     )
 
     if 'DEPTH' in df.columns:
@@ -464,15 +468,19 @@ def scrape_pair(symbol, target, shared_state):
                 if depth_25 < THIN_DEPTH_THRESHOLD and depth_25 > 0:
                     issues.append(('A4', 'MEDIUM', f'Thin mid-market — depth within spread: {format_depth(depth_25)} (min {format_depth(THIN_DEPTH_THRESHOLD)})'))
 
-                # A5 — Depth imbalance (MEDIUM, strike-accumulating)
-                if imbalance_ratio is not None and imbalance_ratio != float('inf') and imbalance_ratio >= DEPTH_IMBALANCE_RATIO:
-                    issues.append(('A5', 'MEDIUM', f'Depth imbalance {imbalance_ratio:.1f}× — {heavier_side} side heavier'))
-                elif imbalance_ratio == float('inf'):
-                    issues.append(('A5', 'HIGH', f'Depth imbalance — one side is empty within spread band ({heavier_side} dominates)'))
+                # A5 — Depth imbalance: DISABLED from alerting.
+                # The scraper captures only a partial orderbook (~10-15 of ~40 layers).
+                # A large customer order on the bid side can displace a high-volume deep
+                # layer, making the book look imbalanced when it is healthy. imbalance_ratio
+                # and heavier_side are still computed and written to the snapshot CSV for
+                # informational review — they never drive alerts or WARNING status.
 
                 critical_issues = [i for i in issues if i[1] == 'CRITICAL']
                 strike_issues   = [i for i in issues if i[1] in ('HIGH', 'MEDIUM')]
-                is_poor         = bool(issues)
+                # WARNING status and Telegram pings require at least one HIGH or CRITICAL.
+                # MEDIUM-only issues are logged in the snapshot but do not trigger alerts.
+                actionable = [i for i in issues if i[1] in ('CRITICAL', 'HIGH')]
+                is_poor    = bool(actionable)
 
                 # ── Thread-safe state read/write ───────────────────────────
                 with _state_lock:
@@ -516,8 +524,9 @@ def scrape_pair(symbol, target, shared_state):
                         )
                         p_state["stale_ob_count"] = 0   # reset after firing
 
-                    # Strike accumulation / clearing (strike-worthy issues only)
-                    if strike_issues:
+                    # Strike accumulation / clearing — HIGH/CRITICAL only.
+                    # MEDIUM issues (A4) are informational and do not accumulate strikes.
+                    if actionable:
                         p_state["consecutive"] += 1
                         if not p_state["start_time"]:
                             p_state["start_time"] = get_nigerian_time().isoformat()
@@ -551,15 +560,12 @@ def scrape_pair(symbol, target, shared_state):
 
                     if cooldown_ok:
                         alert_msg = f"⚠️ <b>ALERT: {symbol}</b>\n"
-                        if not monitor_only:
-                            alert_msg += f"Spread: {curr_spread}% (Target: {target}%)\n"
-                        else:
-                            alert_msg += f"Spread: {curr_spread}% (Monitor only)\n"
+                        alert_msg += f"Spread: {curr_spread}%\n"
                         alert_msg += f"Ask Layers: {ask_layers} | Bid Layers: {bid_layers}\n"
                         alert_msg += f"Strikes: {p_state['consecutive']}\n"
                         alert_msg += f"Depth @ 1.25x: {format_depth(depth_25)} | 1.5x: {format_depth(depth_50)}\n"
                         alert_msg += "\n<b>Issues detected:</b>\n"
-                        for alert_id, severity, label in strike_issues:
+                        for alert_id, severity, label in actionable:
                             alert_msg += f"  [{alert_id}] {label}\n"
                         send_telegram(alert_msg)
                         with _state_lock:
