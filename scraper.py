@@ -47,28 +47,30 @@ MAX_ATTEMPTS_PER_PAIR = 3
 MIN_ORDERBOOK_LAYERS = 10
 MID_PRICE_ALERT_THRESHOLD = 25
 
-# ── New alert thresholds ─────────────────────────────────────────────────────
 # A4 — Thin mid-market: minimum total depth (bid+ask) within the spread band.
-# Expressed in quote-currency units. Adjust per your typical pair sizes.
-THIN_DEPTH_THRESHOLD = 5_000        # $5,000 equivalent — raise for high-vol pairs
+THIN_DEPTH_THRESHOLD = 5_000
 
-# A5 — Depth imbalance: alert when one side is this many times larger than the other.
-DEPTH_IMBALANCE_RATIO = 5.0         # e.g. bid depth is 5× ask depth (or vice versa)
+# A5 — Depth imbalance (disabled from alerting, kept for informational capture).
+DEPTH_IMBALANCE_RATIO = 5.0
 
 # Stale orderbook: fire if top-of-book is byte-identical for this many consecutive checks.
 STALE_OB_CYCLES = 3
 
+# DWS threshold — used as a supporting gate for A2 strike accumulation.
+DWS_POOR_THRESHOLD = 0.5
+
 # ── Parallelism ──────────────────────────────────────────────────────────────
-# Safe ceiling for GitHub Actions (2-core runner, ~7GB RAM).
-# Each Chrome instance uses ~300–400MB. 5 workers ≈ 2GB peak — well within limits.
-# Raise to 8 if running on a larger self-hosted runner.
 MAX_WORKERS = 5
 
 # ── Locks for shared mutable state ──────────────────────────────────────────
-_state_lock     = threading.Lock()   # guards the health state dict
-_results_lock   = threading.Lock()   # guards final_results list
-_spikes_lock    = threading.Lock()   # guards spike_summary list
-_telegram_lock  = threading.Lock()   # serialises Telegram sends (avoids 429s)
+_state_lock     = threading.Lock()
+_results_lock   = threading.Lock()
+_spikes_lock    = threading.Lock()
+_telegram_lock  = threading.Lock()
+
+# ── Deferred alerts — collected per-pair, flushed in one final message ───────
+_deferred_alerts      = []   # list of (symbol, severity, label) tuples
+_deferred_alerts_lock = threading.Lock()
 
 CURRENCY_SYMBOLS = {
     "USDT": "$",
@@ -164,11 +166,6 @@ def calculate_dws(asks_df, bids_df, num_levels=10):
     return (num / den) / mid * 100 if den > 0 else 0
 
 def calculate_depth_imbalance(asks_df, bids_df, spread_pct_range):
-    """
-    Returns (imbalance_ratio, heavier_side) within the spread band.
-    ratio = heavier_side_depth / lighter_side_depth.
-    Returns (1.0, 'balanced') when both sides are zero or equal.
-    """
     if asks_df.empty or bids_df.empty:
         return None, None
     mid   = (asks_df['price'].min() + bids_df['price'].max()) / 2
@@ -185,10 +182,6 @@ def calculate_depth_imbalance(asks_df, bids_df, spread_pct_range):
     return heavier / lighter, ('bids' if bid_d > ask_d else 'asks')
 
 def get_top_of_book_snapshot(asks_df, bids_df):
-    """
-    Returns a compact dict of the top-of-book state for stale detection.
-    Stored in state.json and compared on each run.
-    """
     if asks_df.empty or bids_df.empty:
         return None
     best_ask = asks_df.nsmallest(1, 'price').iloc[0]
@@ -394,8 +387,13 @@ def scrape_pair(symbol, target, shared_state):
     """
     Scrapes one trading pair: orderbook + trade feed.
     Returns a result dict on success, or None on total failure.
-    Writes alert Telegrams inline (thread-safe via _telegram_lock).
-    Reads/writes shared_state under _state_lock.
+
+    Alert logic:
+    - CRITICAL issues (A1, A3) and mid-price movements are captured but NOT
+      sent mid-run. They are stored in _deferred_alerts and flushed at the end.
+    - A2 (spread anomaly) only accumulates a strike when DWS < DWS_POOR_THRESHOLD
+      is also present in the same cycle. A2 alone does not count as a strike.
+    - Stale OB and A4 are informational — logged but never drive strikes.
     """
     monitor_only = (target is None)
     driver = None
@@ -437,50 +435,55 @@ def scrape_pair(symbol, target, shared_state):
                     diff = None
                     spread_anomaly = False
 
+                # ── DWS support check ──────────────────────────────────────
+                # A2 only counts as actionable when DWS is also poor.
+                dws_poor = dws < DWS_POOR_THRESHOLD
+                a2_confirmed = spread_anomaly and dws_poor
+
                 # ── Structured issue detection ─────────────────────────────
-                # Each entry: (alert_id, severity, label)
-                # CRITICAL issues fire immediately (no strike accumulation).
-                # HIGH/MEDIUM issues feed into the strike counter.
                 issues = []
 
-                # A1 — Crossed orderbook (CRITICAL, fire immediately)
+                # A1 — Crossed orderbook (CRITICAL)
                 if not asks_df.empty and not bids_df.empty:
                     best_ask = asks_df['price'].min()
                     best_bid = bids_df['price'].max()
                     if best_bid >= best_ask:
                         issues.append(('A1', 'CRITICAL', f'Crossed orderbook — best bid {best_bid:,.6g} ≥ best ask {best_ask:,.6g}'))
 
-                # A3 — One-sided market (CRITICAL, fire immediately)
+                # A3 — One-sided market (CRITICAL)
                 if asks_df.empty:
                     issues.append(('A3', 'CRITICAL', 'One-sided market — no ask orders'))
                 elif bids_df.empty:
                     issues.append(('A3', 'CRITICAL', 'One-sided market — no bid orders'))
 
-                # A2 — Spread widening (HIGH, strike-accumulating)
+                # A2 — Spread widening, gated by DWS (HIGH, strike-accumulating only when confirmed)
                 if spread_anomaly:
-                    issues.append(('A2', 'HIGH', f'Spread {curr_spread}% vs target {target}% (diff {diff:+.1f}%)'))
+                    dws_note = f" | DWS: {dws:.4f} ({'poor — strike counted' if dws_poor else 'ok — strike skipped'})"
+                    issues.append(('A2', 'HIGH', f'Spread {curr_spread}% vs target {target}% (diff {diff:+.1f}%){dws_note}'))
 
-                # Shallow orderbook — existing check, now named (HIGH)
+                # Shallow orderbook (HIGH)
                 if ask_layers < MIN_ORDERBOOK_LAYERS or bid_layers < MIN_ORDERBOOK_LAYERS:
                     issues.append(('A2', 'HIGH', f'Shallow orderbook — asks:{ask_layers} bids:{bid_layers} (min {MIN_ORDERBOOK_LAYERS})'))
 
-                # A4 — Thin mid-market (MEDIUM, strike-accumulating)
+                # A4 — Thin mid-market (MEDIUM, informational only)
                 if depth_25 < THIN_DEPTH_THRESHOLD and depth_25 > 0:
                     issues.append(('A4', 'MEDIUM', f'Thin mid-market — depth within spread: {format_depth(depth_25)} (min {format_depth(THIN_DEPTH_THRESHOLD)})'))
 
-                # A5 — Depth imbalance: DISABLED from alerting.
-                # The scraper captures only a partial orderbook (~10-15 of ~40 layers).
-                # A large customer order on the bid side can displace a high-volume deep
-                # layer, making the book look imbalanced when it is healthy. imbalance_ratio
-                # and heavier_side are still computed and written to the snapshot CSV for
-                # informational review — they never drive alerts or WARNING status.
+                # A5 — Depth imbalance: DISABLED from alerting (informational only).
 
                 critical_issues = [i for i in issues if i[1] == 'CRITICAL']
-                strike_issues   = [i for i in issues if i[1] in ('HIGH', 'MEDIUM')]
-                # WARNING status and Telegram pings require at least one HIGH or CRITICAL.
-                # MEDIUM-only issues are logged in the snapshot but do not trigger alerts.
-                actionable = [i for i in issues if i[1] in ('CRITICAL', 'HIGH')]
-                is_poor    = bool(actionable)
+
+                # Actionable = CRITICAL issues OR a confirmed A2 (spread + poor DWS).
+                # Shallow orderbook (also tagged A2/HIGH) accumulates strikes independently
+                # of DWS since it is a structural issue, not a spread-tightening artefact.
+                shallow_issues = [i for i in issues if i[0] == 'A2' and 'Shallow' in i[2]]
+                actionable = critical_issues + shallow_issues
+                if a2_confirmed:
+                    # Add only the spread A2 entry (not shallow, already added above)
+                    spread_a2 = [i for i in issues if i[0] == 'A2' and 'Spread' in i[2]]
+                    actionable += spread_a2
+
+                is_poor = bool(actionable)
 
                 # ── Thread-safe state read/write ───────────────────────────
                 with _state_lock:
@@ -493,18 +496,19 @@ def scrape_pair(symbol, target, shared_state):
                         "stale_ob_count":   0,
                     })
 
-                    # Mid-price change alert
+                    # Mid-price change — capture for deferred alert (no immediate ping)
                     last_mid_price = p_state.get("last_mid_price")
                     if mid_price is not None and last_mid_price is not None:
                         price_change_pct = ((mid_price - last_mid_price) / last_mid_price) * 100
                         if abs(price_change_pct) >= MID_PRICE_ALERT_THRESHOLD:
                             direction = "📈" if price_change_pct > 0 else "📉"
-                            send_telegram(
-                                f"{direction} <b>PRICE MOVEMENT ALERT: {symbol}</b>\n"
-                                f"Previous Mid: {last_mid_price:,.6g}\n"
-                                f"Current Mid:  {mid_price:,.6g}\n"
-                                f"Change: {price_change_pct:+.2f}%"
-                            )
+                            with _deferred_alerts_lock:
+                                _deferred_alerts.append((
+                                    symbol,
+                                    'PRICE_MOVE',
+                                    f'{direction} Price moved {price_change_pct:+.2f}% '
+                                    f'({last_mid_price:,.6g} → {mid_price:,.6g})'
+                                ))
                     p_state["last_mid_price"] = mid_price
 
                     # Stale orderbook detection
@@ -515,14 +519,11 @@ def scrape_pair(symbol, target, shared_state):
                         p_state["stale_ob_count"] = 0
                     p_state["last_ob_snapshot"] = ob_snapshot
 
-                    # Set flag so stale issue can be appended after lock exits
                     stale_triggered = (p_state["stale_ob_count"] >= STALE_OB_CYCLES)
                     if stale_triggered:
-                        p_state["stale_ob_count"] = 0   # reset after flagging
+                        p_state["stale_ob_count"] = 0
 
-                    # Strike accumulation / clearing — HIGH/CRITICAL only.
-                    # Stale OB and other MEDIUM issues do not accumulate strikes here;
-                    # stale_triggered is re-evaluated below after issues is updated.
+                    # Strike accumulation / clearing
                     if actionable:
                         p_state["consecutive"] += 1
                         if not p_state["start_time"]:
@@ -535,7 +536,7 @@ def scrape_pair(symbol, target, shared_state):
 
                     shared_state[symbol] = p_state
 
-                # ── Stale orderbook — append to issues after lock, recompute severity ──
+                # ── Stale orderbook — append informational issue after lock ─
                 if stale_triggered and ob_snapshot:
                     issues.append((
                         'STALE', 'HIGH',
@@ -544,43 +545,18 @@ def scrape_pair(symbol, target, shared_state):
                         f'(ask {ob_snapshot["ba_p"]:,.6g} × {ob_snapshot["ba_a"]}, '
                         f'bid {ob_snapshot["bb_p"]:,.6g} × {ob_snapshot["bb_a"]})'
                     ))
-                    # Recompute derived lists now that issues has grown
+                    # Recompute after appending stale issue
                     critical_issues = [i for i in issues if i[1] == 'CRITICAL']
-                    actionable      = [i for i in issues if i[1] in ('CRITICAL', 'HIGH')]
-                    is_poor         = bool(actionable)
+                    actionable_ids  = {id(i) for i in actionable}
+                    # Stale is HIGH and structural — add it to actionable
+                    stale_issue = issues[-1]
+                    actionable.append(stale_issue)
+                    is_poor = bool(actionable)
 
-                # ── CRITICAL alerts — fire immediately, no strike threshold ─
+                # ── Defer CRITICAL alerts (no immediate ping) ──────────────
                 for _, _, label in critical_issues:
-                    send_telegram(
-                        f"🚨 <b>CRITICAL: {symbol}</b>\n"
-                        f"{label}\n"
-                        f"Ask layers: {ask_layers} | Bid layers: {bid_layers}\n"
-                        f"Spread: {curr_spread}%"
-                    )
-
-                # ── Strike-based alert (HIGH/MEDIUM issues) ────────────────
-                if p_state["consecutive"] >= ALERT_THRESHOLD_CYCLES:
-                    last_alert  = p_state.get("last_alert")
-                    cooldown_ok = True
-                    if last_alert:
-                        last_alert_time = datetime.fromisoformat(last_alert)
-                        if last_alert_time.tzinfo is None:
-                            last_alert_time = last_alert_time.replace(tzinfo=NIGERIAN_TZ)
-                        if get_nigerian_time() - last_alert_time < timedelta(minutes=ALERT_COOLDOWN_MINUTES):
-                            cooldown_ok = False
-
-                    if cooldown_ok:
-                        alert_msg = f"⚠️ <b>ALERT: {symbol}</b>\n"
-                        alert_msg += f"Spread: {curr_spread}%\n"
-                        alert_msg += f"Ask Layers: {ask_layers} | Bid Layers: {bid_layers}\n"
-                        alert_msg += f"Strikes: {p_state['consecutive']}\n"
-                        alert_msg += f"Depth @ 1.25x: {format_depth(depth_25)} | 1.5x: {format_depth(depth_50)}\n"
-                        alert_msg += "\n<b>Issues detected:</b>\n"
-                        for alert_id, severity, label in actionable:
-                            alert_msg += f"  [{alert_id}] {label}\n"
-                        send_telegram(alert_msg)
-                        with _state_lock:
-                            shared_state[symbol]["last_alert"] = get_nigerian_time().isoformat()
+                    with _deferred_alerts_lock:
+                        _deferred_alerts.append((symbol, 'CRITICAL', label))
 
                 # ── Spike detection ────────────────────────────────────────
                 pair_spikes = []
@@ -614,12 +590,15 @@ def scrape_pair(symbol, target, shared_state):
                     'ask_layers':       ask_layers,
                     'bid_layers':       bid_layers,
                     'dws':              round(dws, 4),
+                    'dws_poor':         dws_poor,
                     'depth_1.25x':      format_depth(depth_25),
                     'depth_1.5x':       format_depth(depth_50),
                     'imbalance_ratio':  round(imbalance_ratio, 2) if imbalance_ratio and imbalance_ratio != float('inf') else ('inf' if imbalance_ratio == float('inf') else ''),
                     'heavier_side':     heavier_side or '',
                     'stale_ob_count':   p_state.get("stale_ob_count", 0),
-                    '_spikes':          pair_spikes,   # internal — stripped before CSV
+                    '_spikes':          pair_spikes,
+                    '_actionable':      actionable,   # internal — used for final message
+                    '_all_issues':      issues,        # internal — full issue list for context
                 }
                 print(f"[{symbol}] ✓ done (attempt {attempt})")
                 return result
@@ -644,18 +623,18 @@ def scrape_pair(symbol, target, shared_state):
 def main():
     os.makedirs(DATA_DIR, exist_ok=True)
 
-    # Load state once — workers read/write via shared reference under _state_lock
     shared_state = load_state()
 
     final_results = []
     spike_summary = []
 
     run_start = get_nigerian_time()
+
+    # ── Start ping (only mid-run ping) ──────────────────────────────────────
     send_telegram(f"🔄 <b>Starting Hourly Check</b>\nPairs: {len(PAIRS)}\nWorkers: {MAX_WORKERS}")
 
     # ── Parallel scrape ──────────────────────────────────────────────────────
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        # Submit all pairs at once; executor caps concurrency at MAX_WORKERS
         future_to_symbol = {
             executor.submit(scrape_pair, symbol, target, shared_state): symbol
             for symbol, target in PAIRS
@@ -666,7 +645,6 @@ def main():
             try:
                 result = future.result()
                 if result is not None:
-                    # Extract spike data before storing result
                     pair_spikes = result.pop('_spikes', [])
 
                     with _results_lock:
@@ -686,7 +664,6 @@ def main():
     update_daily_log(final_results)
 
     if final_results:
-        # Sort back into PAIRS order for consistent CSV output
         pair_order = {sym: i for i, (sym, _) in enumerate(PAIRS)}
         final_results.sort(key=lambda r: pair_order.get(r['symbol'], 9999))
 
@@ -694,13 +671,58 @@ def main():
         new_df.to_csv(os.path.join(DATA_DIR, "latest.csv"), index=False)
         print("✅ Data saved to latest.csv")
 
-    # Save state — all worker writes are done by this point
     save_state(shared_state)
 
-    # ── Spike summary Telegram ───────────────────────────────────────────────
+    # ── Single consolidated warnings + deferred alerts message ──────────────
+    warnings = [r for r in final_results if r['status'] == 'Warning']
+    total_pairs = len(final_results)
+
+    completion_msg  = f"✅ <b>Check Complete</b>\n"
+    completion_msg += f"<i>{run_end.strftime('%Y-%m-%d %H:%M:%S')} (NGT)</i>\n"
+    completion_msg += f"Pairs checked: {total_pairs} / {len(PAIRS)}\n"
+    completion_msg += f"Warnings: {len(warnings)}\n"
+    completion_msg += f"Duration: {elapsed_sec:.0f}s\n"
+
+    if warnings:
+        completion_msg += f"\n{'─' * 30}\n"
+        completion_msg += "<b>⚠️ Markets with Warnings:</b>\n"
+        for w in warnings:
+            completion_msg += f"\n<b>{w['symbol']}</b>\n"
+            if not w['monitor_only']:
+                completion_msg += f"  Spread: {w['current_spread']}% (Target: {w['target_spread']}%, Diff: {w['percent_diff']:+.2f}%)\n"
+            else:
+                completion_msg += f"  Spread: {w['current_spread']}% (Monitor only)\n"
+            completion_msg += f"  DWS: {w['dws']:.4f}{'  ⚠ poor' if w['dws_poor'] else ''}\n"
+            completion_msg += f"  Ask Layers: {w['ask_layers']} | Bid Layers: {w['bid_layers']}\n"
+            completion_msg += f"  Depth @ 1.25x: {w['depth_1.25x']} | 1.5x: {w['depth_1.5x']}\n"
+            completion_msg += f"  Strikes: {w['strikes']}\n"
+            # List all actionable issues for this market
+            actionable = w.pop('_actionable', [])
+            if actionable:
+                completion_msg += "  <b>Issues:</b>\n"
+                for alert_id, severity, label in actionable:
+                    icon = "🚨" if severity == 'CRITICAL' else "⚠️"
+                    completion_msg += f"    {icon} [{alert_id}] {label}\n"
+
+    # ── Append any deferred non-warning alerts (price moves, stale not in warnings) ─
+    with _deferred_alerts_lock:
+        deferred = list(_deferred_alerts)
+
+    # Filter to deferred alerts not already covered by warning market detail above
+    warning_symbols = {w['symbol'] for w in warnings}
+    extra_deferred = [d for d in deferred if d[1] == 'PRICE_MOVE']  # price moves always shown
+    if extra_deferred:
+        completion_msg += f"\n{'─' * 30}\n"
+        completion_msg += "<b>📊 Price Movement Alerts:</b>\n"
+        for symbol, _, label in extra_deferred:
+            completion_msg += f"  <b>{symbol}</b>: {label}\n"
+
+    send_telegram(completion_msg)
+
+    # ── Spike summary — separate standalone ping ─────────────────────────────
     if spike_summary:
         spike_msg  = "🚨 <b>Trade Spike Summary</b>\n"
-        spike_msg += f"<i>{run_end.strftime('%Y-%m-%d %H:%M:%S')} (NGN)</i>\n"
+        spike_msg += f"<i>{run_end.strftime('%Y-%m-%d %H:%M:%S')} (NGT)</i>\n"
         spike_msg += f"{'─' * 30}\n"
         for entry in spike_summary:
             spike_msg += f"\n<b>{entry['symbol']}</b>\n"
@@ -714,33 +736,6 @@ def main():
         send_telegram(spike_msg)
     else:
         send_telegram("✅ <b>No trade spikes detected this check.</b>")
-
-    # ── Completion message ───────────────────────────────────────────────────
-    warnings    = [r for r in final_results if r['status'] == 'Warning']
-    total_pairs = len(final_results)
-
-    completion_msg  = f"✅ <b>Check Complete</b>\n"
-    completion_msg += f"Total Pairs: {total_pairs} / {len(PAIRS)}\n"
-    completion_msg += f"Warnings: {len(warnings)}\n"
-    completion_msg += f"Duration: {elapsed_sec:.0f}s\n"
-
-    if warnings:
-        completion_msg += "\n<b>⚠️ Markets with Warnings:</b>\n"
-        for w in warnings:
-            completion_msg += f"\n<b>{w['symbol']}</b>"
-            if not w['monitor_only']:
-                completion_msg += f"\n  Spread: {w['current_spread']}% (Target: {w['target_spread']}%)"
-                completion_msg += f"\n  Diff: {w['percent_diff']:+.2f}%"
-            else:
-                completion_msg += f"\n  Spread: {w['current_spread']}% (Monitor only)"
-            completion_msg += f"\n  Ask Layers: {w['ask_layers']}"
-            completion_msg += f"\n  Bid Layers: {w['bid_layers']}"
-            completion_msg += f"\n  Strikes: {w['strikes']}"
-            completion_msg += f"\n  DWS: {w['dws']}"
-            completion_msg += f"\n  Depth @ 1.25x: {w['depth_1.25x']}"
-            completion_msg += f"\n  Depth @ 1.5x: {w['depth_1.5x']}\n"
-
-    send_telegram(completion_msg)
 
 if __name__ == "__main__":
     main()
