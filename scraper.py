@@ -437,7 +437,7 @@ def scrape_pair(symbol, target, shared_state):
 
                 # ── DWS support check ──────────────────────────────────────
                 # A2 only counts as actionable when DWS is also poor.
-                dws_poor = dws < DWS_POOR_THRESHOLD
+                dws_poor = dws > DWS_POOR_THRESHOLD
                 a2_confirmed = spread_anomaly and dws_poor
 
                 # ── Structured issue detection ─────────────────────────────
